@@ -26,7 +26,7 @@ TEXT_KEY_PRIORITY = [
     "canonical_card_text",
 ]
 
-st.set_page_config(page_title="AI↔他分野 推薦（E5）", layout="wide")
+st.set_page_config(page_title="AI↔他分野 推薦（E5）vo2", layout="wide")
 st.title("AI研究者 ↔ 他分野研究者 推薦（E5 cosine）")
 st.caption("E5（query:/passage:）+ normalize_embeddings=True を使用して類似度を計算します。")
 
@@ -192,25 +192,43 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
 
     research_field = (get_nested(r, "meta.research_field") or r.get("research_field") or "").strip()
 
+    # TRIOS（両roleで共通）
+    trios_topics = _as_list(get_nested(r, "trios.research_topics"))
+    trios_papers = _as_list(get_nested(r, "trios.papers"))
+
     # -------------------------
     # Domain researcher fields
     # -------------------------
     if is_domain:
         themes = _as_list(get_nested(r, "project.themes"))
+        academic_challenge_overview = (get_nested(r, "project.academic_challenge_overview") or "").strip()
+        ai_leverage_and_impact = (get_nested(r, "project.ai_leverage_and_impact") or "").strip()
+
         sources = (get_nested(r, "data.sources_and_collection") or "").strip()
-        data_types_raw = (get_nested(r, "data.data_types_raw") or "").strip()
+
+        # NOTE: ユーザー要望の "date_typees_raw" はスペル揺れの可能性があるため両方拾う
+        data_types_raw = (
+            (get_nested(r, "data.data_types_raw") or "").strip()
+            or (get_nested(r, "data.date_typees_raw") or "").strip()
+        )
+
         modalities = _as_list(get_nested(r, "data.modalities"))
         complexity_flags = _as_list(get_nested(r, "data.complexity_flags"))
         complexity_raw = _as_list(get_nested(r, "data.complexity_raw"))
 
-        hints = (
-            get_nested(r, "needs.needed_ai_category_hints")
+        # needs
+        task_type_hints = _as_list(get_nested(r, "needs.task_type_hints"))
+
+        need_ai_hints = (
+            get_nested(r, "needs.need_ai_category_hints")
+            or get_nested(r, "needs.needed_ai_category_hints")
             or get_nested(r, "needs.need_ai_category_hints")
+            or get_nested(r, "needs.needed_ai_category_hints")
             or get_nested(r, "need_ai_category_hints")
             or get_nested(r, "needed_ai_category_hints")
             or []
         )
-        hints = _as_list(hints)
+        need_ai_hints = _as_list(need_ai_hints)
 
         # 日本語文
         ja = []
@@ -218,6 +236,11 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
             ja.append(f"私の研究分野は{research_field}です。")
         if themes:
             ja.append(f"研究テーマは{_join(themes, sep='、')}です。")
+        if academic_challenge_overview:
+            ja.append(f"学術的課題の概要は{academic_challenge_overview}です。")
+        if ai_leverage_and_impact:
+            ja.append(f"AI活用の方針・期待するインパクトは{ai_leverage_and_impact}です。")
+
         if sources:
             ja.append(f"データの出所・収集方法は{sources}です。")
         if data_types_raw:
@@ -228,16 +251,25 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
             ja.append(f"データの複雑性は{_join(complexity_raw, sep='、')}です。")
         elif complexity_flags:
             ja.append(f"データの複雑性フラグは{_join(complexity_flags, sep='、')}です。")
-        if hints:
-            ja.append(f"必要とするAI領域のヒントは{_join(hints, sep='、')}です。")
+
+        if task_type_hints:
+            ja.append(f"想定タスク種別のヒントは{_join(task_type_hints, sep='、')}です。")
+        if need_ai_hints:
+            ja.append(f"必要とするAI領域のヒントは{_join(need_ai_hints, sep='、')}です。")
+
         ja_text = " ".join(ja).strip()
 
-        # 英語文（値が日本語でもOK：テンプレは英語、タグはそのまま）
+        # 英語文（値が日本語でもOK：テンプレは英語、値はそのまま）
         en = []
         if research_field:
             en.append(f"My research field is {research_field}.")
         if themes:
             en.append(f"My research themes include {_join(themes)}.")
+        if academic_challenge_overview:
+            en.append(f"An overview of my academic challenge is {academic_challenge_overview}.")
+        if ai_leverage_and_impact:
+            en.append(f"My AI leverage plan and expected impact: {ai_leverage_and_impact}.")
+
         if sources:
             en.append(f"My data sources/collection include {sources}.")
         if data_types_raw:
@@ -248,41 +280,62 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
             en.append(f"The data complexity is {_join(complexity_raw)}.")
         elif complexity_flags:
             en.append(f"Complexity flags include {_join(complexity_flags)}.")
-        if hints:
-            en.append(f"Needed AI categories include {_join(hints)}.")
+
+        if task_type_hints:
+            en.append(f"Task type hints include {_join(task_type_hints)}.")
+        if need_ai_hints:
+            en.append(f"Needed AI categories include {_join(need_ai_hints)}.")
+
         en_text = " ".join(en).strip()
+
+        return (ja_text + "\n" + en_text).strip()
 
     # -------------------------
     # AI researcher fields
     # -------------------------
-    else:
-        ai_categories = _as_list(get_nested(r, "offers.ai_categories_5_1")) or _as_list(get_nested(r, "offers.ai_categories_raw"))
-        methods = _as_list(get_nested(r, "offers.methods_keyword"))
-        themes = _as_list(get_nested(r, "offers.current_main_research_themes"))
+    ai_categories_raw = _as_list(get_nested(r, "offers.ai_categories_raw"))
 
-        # 日本語文
-        ja = []
-        if research_field:
-            ja.append(f"私の研究分野は{research_field}です。")
-        if ai_categories:
-            ja.append(f"得意なAI分野は{_join(ai_categories, sep='、')}です。")
-        if methods:
-            ja.append(f"用いる手法キーワードは{_join(methods, sep='、')}です。")
-        if themes:
-            ja.append(f"主な研究テーマは{_join(themes, sep='、')}です。")
-        ja_text = " ".join(ja).strip()
+    # NOTE: データ側は methods_keywords（複数形）が実体なので両方拾う
+    methods_keyword = (
+        get_nested(r, "offers.methods_keyword")
+        or get_nested(r, "offers.methods_keywords")
+        or []
+    )
+    methods_keyword = _as_list(methods_keyword)
 
-        # 英語文
-        en = []
-        if research_field:
-            en.append(f"My research field is {research_field}.")
-        if ai_categories:
-            en.append(f"My AI expertise includes {_join(ai_categories)}.")
-        if methods:
-            en.append(f"My research methods include {_join(methods)}.")
-        if themes:
-            en.append(f"My main research themes are {_join(themes)}.")
-        en_text = " ".join(en).strip()
+    current_main_research_themes = _as_list(get_nested(r, "offers.current_main_research_themes"))
+
+    # 日本語文
+    ja = []
+    if research_field:
+        ja.append(f"私の研究分野は{research_field}です。")
+    if ai_categories_raw:
+        ja.append(f"提供できるAI領域は{_join(ai_categories_raw, sep='、')}です。")
+    if methods_keyword:
+        ja.append(f"主な手法キーワードは{_join(methods_keyword, sep='、')}です。")
+    if current_main_research_themes:
+        ja.append(f"現在の主な研究テーマは{_join(current_main_research_themes, sep='、')}です。")
+    if trios_topics:
+        ja.append(f"研究トピックは{_join(trios_topics, sep='、')}です。")
+    if trios_papers:
+        ja.append(f"関連論文は{_join(trios_papers, sep='、')}です。")
+    ja_text = " ".join(ja).strip()
+
+    # 英語文
+    en = []
+    if research_field:
+        en.append(f"My research field is {research_field}.")
+    if ai_categories_raw:
+        en.append(f"I can offer AI categories such as {_join(ai_categories_raw)}.")
+    if methods_keyword:
+        en.append(f"Methods/keywords include {_join(methods_keyword)}.")
+    if current_main_research_themes:
+        en.append(f"My current main research themes include {_join(current_main_research_themes)}.")
+    if trios_topics:
+        en.append(f"Research topics include {_join(trios_topics)}.")
+    if trios_papers:
+        en.append(f"Related papers include {_join(trios_papers)}.")
+    en_text = " ".join(en).strip()
 
     # 両方入れる（空は除外）
     parts = []
@@ -291,7 +344,7 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
     if en_text:
         parts.append(en_text)
 
-    return "\n".join(parts).strip()
+    return (ja_text + "\n" + en_text).strip()
 
 def get_text_by_priority(r: Dict[str, Any], priorities: List[str]) -> str:
     for key in priorities:
@@ -462,6 +515,7 @@ for i, r in enumerate(rows, start=1):
 
     # ✅ 新JSONLの主要情報も含めて埋め込みテキストを作る（重要）
     embed_text = build_embedding_text_selected_fields(r)
+    matched_url = (get_nested(r, "trios.matched_url") or "").strip()
 
     records.append({
         "id": rid,
@@ -472,6 +526,7 @@ for i, r in enumerate(rows, start=1):
         "research_field": meta.get("research_field") or "",
         "summary": summarize_one_line(r),
         "embed_text": embed_text,
+        "matched_url": matched_url,
         # 参考: ここに追加情報を保持（UIは変えないので表示列には使わない）
         "role_raw": "" if role_raw is None else str(role_raw),
     })
@@ -506,6 +561,12 @@ if "url" in row and pd.notna(row["url"]):
     # st.write(row["url"])
 else:
     st.write("**アンケートURL:** なし")
+# ✅ TRIOS matchedurl 表示（クリック可能）
+if "matched_url" in row and pd.notna(row["matched_url"]) and str(row["matched_url"]).strip():
+    st.write("**TRIOS URL:**")
+    st.link_button("open", row["matched_url"])
+else:
+    st.write("**TRIOS URL:** なし")
 st.write("**embed_text 文字数:**", len(row["embed_text"]))
 st.text_area("embed_text（類似度計算に使う全文）", row["embed_text"], height=400)
 
@@ -572,7 +633,7 @@ res = doc_df.iloc[order_idx].copy()
 res.insert(0, "rank", np.arange(1, len(res) + 1))
 res.insert(1, "similarity", sims[order_idx].astype(float))
 
-show_cols = ["rank", "similarity", "id", "name", "affiliation", "position", "research_field", "summary", "url"]
+show_cols = ["rank", "similarity", "id", "name", "affiliation", "position", "research_field", "summary", "url", "matched_url"]
 res_show = res[show_cols].copy()
 
 st.subheader("検索結果（全件）")
@@ -586,6 +647,7 @@ try:
         height=700,
         column_config={
             "url": st.column_config.LinkColumn("アンケートURL", display_text="open"),
+            "matched_url": st.column_config.LinkColumn("TRIOS URL", display_text="open"),
             "similarity": st.column_config.NumberColumn("類似度", format="%.4f"),
             "rank": st.column_config.NumberColumn("順位"),
         },
