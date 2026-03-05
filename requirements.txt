@@ -3,3 +3,5 @@ pandas
 numpy
 sentence-transformers
 torch
+pykakasi
+streamlit-extras

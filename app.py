@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 # ------------------------
 # Fixed settings
 # ------------------------
-DEFAULT_MODEL = "intfloat/multilingual-e5-base"
+DEFAULT_MODEL = "intfloat/multilingual-e5-large"
 ROLE_PATH = "meta.role"
 
 # 旧データ互換＋新データで使いそうな候補も追加
@@ -26,9 +26,9 @@ TEXT_KEY_PRIORITY = [
     "canonical_card_text",
 ]
 
-st.set_page_config(page_title="AI↔他分野 推薦（AI研究者のみTRIOSあり）", layout="wide")
-st.title("AI研究者 ↔ 他分野研究者 推薦（AI研究者のみTRIOSあり）")
-st.caption("E5（query:/passage:）+ normalize_embeddings=True を使用して類似度を計算します。")
+
+st.set_page_config(page_title="AI↔他分野 推薦 / AI↔Domain Matching", layout="wide")
+st.title("AI研究者 ↔ 他分野研究者 推薦 / AI↔Domain Researcher Matching")
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
@@ -180,11 +180,39 @@ def _join(xs, sep=", "):
     xs = [str(x).strip() for x in xs if str(x).strip()]
     return sep.join(xs)
 
+import re
 
-def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
+def strip_outer_parens(s: str) -> str:
+    if s is None:
+        return ""
+    t = str(s).strip()
+
+    # 全角（ ）も半角( )も対応
+    pairs = [("(", ")"), ("（", "）")]
+
+    for l, r in pairs:
+        if t.startswith(l) and t.endswith(r) and len(t) >= 2:
+            t = t[1:-1].strip()
+            break
+
+    # 念のため、外側にカッコが複数重なってたら1回だけ外す仕様（必要なら while に変更OK）
+    return t
+
+def _cap_list(xs: List[str], max_items: int = 50) -> List[str]:
     """
-    roleごとに指定項目のみを使い、
-    すべての人で「日本語文 + 英語文」を両方入れた embed_text を返す。
+    長すぎるリストでトークン上限超過やノイズが増えるのを避けるため、上位max_itemsに制限。
+    UI表示は変えない（埋め込み用のみ）。
+    """
+    xs2 = [str(x).strip() for x in xs if str(x).strip()]
+    return xs2[:max_items]
+
+
+def build_embedding_texts_selected_fields(r: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    役割ごとに指定項目のみを使い、E5用の入力テキストを2本作る：
+      - ai_text: 研究内容/ニーズ/データ/制約など（論文以外）
+      - paper_text: trios_topics, trios_papers, masters_thesis_titles（論文・トピック系）
+    文章（自然文）ではなく、フィールド付きの箇条書き（構造化）で出力する。
     """
 
     role_raw = (get_nested(r, "meta.role") or get_nested(r, "role") or "").lower()
@@ -192,9 +220,18 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
 
     research_field = (get_nested(r, "meta.research_field") or r.get("research_field") or "").strip()
 
-    # TRIOS（両roleで共通）
+    # paper-related (両role共通)
+    masters_thesis_titles = [
+        strip_outer_parens(x)
+        for x in (get_nested(r, "meta.masters_thesis_titles") or [])
+        if str(x).strip()
+    ]
     trios_topics = _as_list(get_nested(r, "trios.research_topics"))
     trios_papers = _as_list(get_nested(r, "trios.papers"))
+
+    masters_thesis_titles = _cap_list(masters_thesis_titles, 50)
+    trios_topics = _cap_list(trios_topics, 50)
+    trios_papers = _cap_list(trios_papers, 50)
 
     # -------------------------
     # Domain researcher fields
@@ -216,13 +253,10 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
         complexity_flags = _as_list(get_nested(r, "data.complexity_flags"))
         complexity_raw = _as_list(get_nested(r, "data.complexity_raw"))
 
-        # needs
         task_type_hints = _as_list(get_nested(r, "needs.task_type_hints"))
 
         need_ai_hints = (
             get_nested(r, "needs.need_ai_category_hints")
-            or get_nested(r, "needs.needed_ai_category_hints")
-            or get_nested(r, "needs.need_ai_category_hints")
             or get_nested(r, "needs.needed_ai_category_hints")
             or get_nested(r, "need_ai_category_hints")
             or get_nested(r, "needed_ai_category_hints")
@@ -230,65 +264,74 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
         )
         need_ai_hints = _as_list(need_ai_hints)
 
-        # 日本語文
-        ja = []
+        # --- ai_text（論文以外）: フィールド付き箇条書き ---
+        lines = []
         if research_field:
-            ja.append(f"私の研究分野は{research_field}です。")
+            lines.append(f"Research field / 研究分野: {research_field}")
         if themes:
-            ja.append(f"研究テーマは{_join(themes, sep='、')}です。")
+            lines.append(f"Research theme(s) / 研究テーマ: {_join(_cap_list(themes, 20))}")
         if academic_challenge_overview:
-            ja.append(f"学術的課題の概要は{academic_challenge_overview}です。")
+            lines.append(f"Academic challenge / 学術課題: {academic_challenge_overview}")
         if ai_leverage_and_impact:
-            ja.append(f"AI活用の方針・期待するインパクトは{ai_leverage_and_impact}です。")
+            lines.append(f"AI leverage & impact / AI活用の方針・期待インパクト: {ai_leverage_and_impact}")
 
         if sources:
-            ja.append(f"データの出所・収集方法は{sources}です。")
+            lines.append(f"Data sources & collection / データ出所・収集方法: {sources}")
         if data_types_raw:
-            ja.append(f"扱うデータ種別は{data_types_raw}です。")
+            lines.append(f"Data types / データ種別: {data_types_raw}")
         if modalities:
-            ja.append(f"データのモダリティは{_join(modalities, sep='、')}です。")
-        if complexity_raw:
-            ja.append(f"データの複雑性は{_join(complexity_raw, sep='、')}です。")
-        elif complexity_flags:
-            ja.append(f"データの複雑性フラグは{_join(complexity_flags, sep='、')}です。")
+            lines.append(f"Modalities / モダリティ: {_join(_cap_list(modalities, 20))}")
+        # complexity: flags優先、なければraw
+        if complexity_flags:
+            lines.append(f"Data complexity / 複雑性: {_join(_cap_list(complexity_flags, 20))}")
+        elif complexity_raw:
+            lines.append(f"Data complexity / 複雑性: {_join(_cap_list(complexity_raw, 20))}")
 
         if task_type_hints:
-            ja.append(f"想定タスク種別のヒントは{_join(task_type_hints, sep='、')}です。")
+            lines.append(f"Task type hints / 想定タスク: {_join(_cap_list(task_type_hints, 20))}")
         if need_ai_hints:
-            ja.append(f"必要とするAI領域のヒントは{_join(need_ai_hints, sep='、')}です。")
+            lines.append(f"Needed AI areas (hints) / 必要AI領域ヒント: {_join(_cap_list(need_ai_hints, 30))}")
 
-        ja_text = " ".join(ja).strip()
+        ai_text = "\n".join(lines).strip()
 
-        # 英語文（値が日本語でもOK：テンプレは英語、値はそのまま）
-        en = []
+    # -------------------------
+    # AI researcher fields
+    # -------------------------
+    else:
+        ai_categories_raw = _as_list(get_nested(r, "offers.ai_categories_raw"))
+
+        methods_keyword = (
+            get_nested(r, "offers.methods_keyword")
+            or get_nested(r, "offers.methods_keywords")
+            or []
+        )
+        methods_keyword = _as_list(methods_keyword)
+
+        current_main_research_themes = _as_list(get_nested(r, "offers.current_main_research_themes"))
+
+        lines = []
         if research_field:
-            en.append(f"My research field is {research_field}.")
-        if themes:
-            en.append(f"My research themes include {_join(themes)}.")
-        if academic_challenge_overview:
-            en.append(f"An overview of my academic challenge is {academic_challenge_overview}.")
-        if ai_leverage_and_impact:
-            en.append(f"My AI leverage plan and expected impact: {ai_leverage_and_impact}.")
+            lines.append(f"Research field / 研究分野: {research_field}")
+        if ai_categories_raw:
+            lines.append(f"AI categories / AI領域: {_join(_cap_list(ai_categories_raw, 30))}")
+        if methods_keyword:
+            lines.append(f"Methods keywords / 手法キーワード: {_join(_cap_list(methods_keyword, 30))}")
+        if current_main_research_themes:
+            lines.append(f"Main research themes / 主な研究テーマ: {_join(_cap_list(current_main_research_themes, 30))}")
 
-        if sources:
-            en.append(f"My data sources/collection include {sources}.")
-        if data_types_raw:
-            en.append(f"The data types are {data_types_raw}.")
-        if modalities:
-            en.append(f"Data modalities include {_join(modalities)}.")
-        if complexity_raw:
-            en.append(f"The data complexity is {_join(complexity_raw)}.")
-        elif complexity_flags:
-            en.append(f"Complexity flags include {_join(complexity_flags)}.")
+        ai_text = "\n".join(lines).strip()
 
-        if task_type_hints:
-            en.append(f"Task type hints include {_join(task_type_hints)}.")
-        if need_ai_hints:
-            en.append(f"Needed AI categories include {_join(need_ai_hints)}.")
+    # --- paper_text（論文・トピック） ---
+    p_lines = []
+    if trios_topics:
+        p_lines.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
+    if trios_papers:
+        p_lines.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
+    if masters_thesis_titles:
+        p_lines.append(f"Masters thesis titles / 修論タイトル: {_join(masters_thesis_titles)}")
+    paper_text = "\n".join(p_lines).strip()
 
-        en_text = " ".join(en).strip()
-
-        return (ja_text + "\n" + en_text).strip()
+    return ai_text, paper_text
 
     # -------------------------
     # AI researcher fields
@@ -319,6 +362,8 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
         ja.append(f"研究トピックは{_join(trios_topics, sep='、')}です。")
     if trios_papers:
         ja.append(f"関連論文は{_join(trios_papers, sep='、')}です。")
+    if masters_thesis_titles:
+            ja.append(f"担当した修論テーマは{_join(masters_thesis_titles, sep='、')}です。")
     ja_text = " ".join(ja).strip()
 
     # 英語文
@@ -335,6 +380,8 @@ def build_embedding_text_selected_fields(r: Dict[str, Any]) -> str:
         en.append(f"Research topics include {_join(trios_topics)}.")
     if trios_papers:
         en.append(f"Related papers include {_join(trios_papers)}.")
+    if masters_thesis_titles:
+        en.append(f"My supervised master’s thesis topics are {_join(masters_thesis_titles)}.")
     en_text = " ".join(en).strip()
 
     # 両方入れる（空は除外）
@@ -393,25 +440,44 @@ def encode_texts(model_name: str, texts: List[str], mode: str) -> np.ndarray:
 @st.cache_data(show_spinner=False)
 def precompute_similarity_matrices(
     model_name: str,
-    ai_texts: List[str],
-    other_texts: List[str],
+    ai_texts_main: List[str],
+    ai_texts_paper: List[str],
+    other_texts_main: List[str],
+    other_texts_paper: List[str],
+    w_main: float = 0.7,
+    w_paper: float = 0.3,
 ) -> Dict[str, np.ndarray]:
     """
-    2方向の類似度行列を先に作る:
+    2方向の類似度行列を先に作る（重み付き）:
       - AI(query) -> Other(passage):  [n_ai, n_other]
       - Other(query) -> AI(passage):  [n_other, n_ai]
-    """
-    ai_q = encode_texts(model_name, ai_texts, mode="query")
-    ai_p = encode_texts(model_name, ai_texts, mode="passage")
-    ot_q = encode_texts(model_name, other_texts, mode="query")
-    ot_p = encode_texts(model_name, other_texts, mode="passage")
 
-    sim_ai_to_other = ai_q @ ot_p.T
-    sim_other_to_ai = ot_q @ ai_p.T
+    sim = w_main * sim_main + w_paper * sim_paper
+    """
+    # main
+    ai_q_m = encode_texts(model_name, ai_texts_main, mode="query")
+    ai_p_m = encode_texts(model_name, ai_texts_main, mode="passage")
+    ot_q_m = encode_texts(model_name, other_texts_main, mode="query")
+    ot_p_m = encode_texts(model_name, other_texts_main, mode="passage")
+
+    sim_ai_to_other_main = ai_q_m @ ot_p_m.T
+    sim_other_to_ai_main = ot_q_m @ ai_p_m.T
+
+    # paper
+    ai_q_p = encode_texts(model_name, ai_texts_paper, mode="query")
+    ai_p_p = encode_texts(model_name, ai_texts_paper, mode="passage")
+    ot_q_p = encode_texts(model_name, other_texts_paper, mode="query")
+    ot_p_p = encode_texts(model_name, other_texts_paper, mode="passage")
+
+    sim_ai_to_other_paper = ai_q_p @ ot_p_p.T
+    sim_other_to_ai_paper = ot_q_p @ ai_p_p.T
+
+    sim_ai_to_other = (w_main * sim_ai_to_other_main + w_paper * sim_ai_to_other_paper).astype(np.float32)
+    sim_other_to_ai = (w_main * sim_other_to_ai_main + w_paper * sim_other_to_ai_paper).astype(np.float32)
 
     return {
-        "sim_ai_to_other": sim_ai_to_other.astype(np.float32),
-        "sim_other_to_ai": sim_other_to_ai.astype(np.float32),
+        "sim_ai_to_other": sim_ai_to_other,
+        "sim_other_to_ai": sim_other_to_ai,
     }
 
 
@@ -419,23 +485,23 @@ def precompute_similarity_matrices(
 # Data selection UI
 # ------------------------
 with st.sidebar:
-    st.header("データ選択（任意）")
-    st.caption("デフォルトはリポジトリ内の data/ を使用します。必要ならここで差し替えできます。")
+    st.header("データ選択（任意） / Data selection (optional)")
+    st.caption("デフォルトはリポジトリ内の data/ を使用します。必要ならここで差し替えできます。 / Default uses data/ in the repo; you can replace it here if needed.")
 
     # JSONL
     jsonl_files = sorted([p.name for p in DATA_DIR.glob("*.jsonl")])
     default_jsonl = jsonl_files[0] if jsonl_files else None
 
-    jsonl_mode = st.radio("JSONLの読み込み", ["既存ファイルを使う", "アップロードして差し替える"], index=0)
+    jsonl_mode = st.radio("JSONLの読み込み / Load JSONL", ["既存ファイルを使う / Use existing", "アップロードして差し替える / Upload & replace"], index=0)
     selected_jsonl_name = None
     uploaded_jsonl = None
-    if jsonl_mode == "既存ファイルを使う":
+    if jsonl_mode == "既存ファイルを使う / Use existing":
         if default_jsonl is None:
-            st.error("data/ に JSONL がありません。アップロードしてください。")
+            st.error("data/ に JSONL がありません。アップロードしてください。 / No JSONL in data/. Please upload.")
         else:
-            selected_jsonl_name = st.selectbox("JSONLファイル", jsonl_files, index=0)
+            selected_jsonl_name = st.selectbox("JSONLファイル / JSONL file", jsonl_files, index=0)
     else:
-        uploaded_jsonl = st.file_uploader("JSONLをアップロード", type=["jsonl"])
+        uploaded_jsonl = st.file_uploader("JSONLをアップロード / Upload JSONL", type=["jsonl"])
 
     st.divider()
 
@@ -443,43 +509,43 @@ with st.sidebar:
     csv_files = sorted([p.name for p in DATA_DIR.glob("*.csv")])
     default_csv = "url_mapping_mock.csv" if "url_mapping_mock.csv" in csv_files else (csv_files[0] if csv_files else None)
 
-    csv_mode = st.radio("アンケートCSVの読み込み", ["既存ファイルを使う", "アップロードして差し替える"], index=0)
+    csv_mode = st.radio("アンケートCSVの読み込み / Load survey CSV", ["既存ファイルを使う / Use existing", "アップロードして差し替える / Upload & replace"], index=0)
     selected_csv_name = None
     uploaded_csv = None
-    if csv_mode == "既存ファイルを使う":
+    if csv_mode == "既存ファイルを使う / Use existing":
         if default_csv is None:
-            st.warning("data/ に CSV がありません（URL列は空になります）。必要ならアップロードしてください。")
+            st.warning("data/ に CSV がありません（URL列は空になります）。必要ならアップロードしてください。 / No CSV in data/ (URL column will be empty). Upload if needed.")
         else:
             idx = csv_files.index(default_csv) if default_csv in csv_files else 0
-            selected_csv_name = st.selectbox("CSVファイル", csv_files, index=idx)
+            selected_csv_name = st.selectbox("CSVファイル / CSV file", csv_files, index=idx)
     else:
-        uploaded_csv = st.file_uploader("CSVをアップロード（id,url列がある想定）", type=["csv"])
+        uploaded_csv = st.file_uploader("CSVをアップロード（id,url列がある想定） / Upload CSV (expects id,url)", type=["csv"])
 
     st.divider()
-    st.caption(f"使用モデル: {DEFAULT_MODEL}")
+    st.caption(f"使用モデル / Model : {DEFAULT_MODEL}")
 
 
 # ------------------------
 # Load selected data
 # ------------------------
-if jsonl_mode == "アップロードして差し替える":
+if jsonl_mode == "アップロードして差し替える / Upload & replace":
     if uploaded_jsonl is None:
-        st.warning("JSONLが未指定です。サイドバーでアップロードしてください。")
+        st.warning("JSONLが未指定です。サイドバーでアップロードしてください。 / JSONL not selected. Please upload in the sidebar.")
         st.stop()
     rows = read_jsonl_from_uploaded(uploaded_jsonl)
     jsonl_label = f"uploaded:{uploaded_jsonl.name}"
 else:
     if selected_jsonl_name is None:
-        st.error("JSONLが見つかりません。data/に置くか、アップロードしてください。")
+        st.error("JSONLが見つかりません。data/に置くか、アップロードしてください。 / JSONL not found. Put it in data/ or upload.")
         st.stop()
     rows = read_jsonl_from_path(DATA_DIR / selected_jsonl_name)
     jsonl_label = selected_jsonl_name
 
 if not rows:
-    st.error("JSONLが空です。")
+    st.error("JSONLが空です。 / JSONL is empty.")
     st.stop()
 
-if csv_mode == "アップロードして差し替える":
+if csv_mode == "アップロードして差し替える / Upload & replace":
     if uploaded_csv is None:
         map_df = pd.DataFrame(columns=["id", "url"])
         csv_label = "(none)"
@@ -494,9 +560,15 @@ else:
         map_df = read_csv_from_path(DATA_DIR / selected_csv_name)
         csv_label = selected_csv_name
 
-st.caption(f"データ: JSONL={jsonl_label} / CSV={csv_label}")
+st.markdown(
+    '##### アンケートに回答頂いた方の名前を <a href="#person_selectbox"><b>名前入力欄</b></a> に入力すると，下記のデータを使用して計算した研究者間の類似度を表示します．',
+    unsafe_allow_html=True
+)
 
-
+st.markdown(
+    '##### If you enter the name of a person who responded to the questionnaire in <a href="#person_selectbox"><b>Type name</b></a>, the similarity between researchers calculated using the data below.',
+    unsafe_allow_html=True
+)
 # ------------------------
 # Build df
 # ------------------------
@@ -514,9 +586,18 @@ for i, r in enumerate(rows, start=1):
     roles_raw.append(role_raw)
 
     # ✅ 新JSONLの主要情報も含めて埋め込みテキストを作る（重要）
-    embed_text = build_embedding_text_selected_fields(r)
+    embed_text_ai, embed_text_paper = build_embedding_texts_selected_fields(r)
+    # デバッグ/表示用（UIは変えない）
+    embed_text = (embed_text_ai + "\n\n--- papers ---\n" + embed_text_paper).strip()
     matched_url = (get_nested(r, "trios.matched_url") or "").strip()
+    masters_thesis_titles = get_nested(r, "meta.masters_thesis_titles") or []
 
+    # 外側カッコ除去（任意）
+    masters_thesis_titles = [
+        strip_outer_parens(x)
+        for x in masters_thesis_titles
+        if str(x).strip()
+    ]
     records.append({
         "id": rid,
         "role_norm": role_n,
@@ -525,8 +606,11 @@ for i, r in enumerate(rows, start=1):
         "position": meta.get("position") or "",
         "research_field": meta.get("research_field") or "",
         "summary": summarize_one_line(r),
+        "embed_text_ai": embed_text_ai,
+        "embed_text_paper": embed_text_paper,
         "embed_text": embed_text,
         "matched_url": matched_url,
+        "masters_thesis_titles": masters_thesis_titles,
         # 参考: ここに追加情報を保持（UIは変えないので表示列には使わない）
         "role_raw": "" if role_raw is None else str(role_raw),
     })
@@ -541,90 +625,199 @@ else:
 ai_df = df[df["role_norm"] == "ai_researcher"].reset_index(drop=True)
 other_df = df[df["role_norm"] == "other_field_researcher"].reset_index(drop=True)
 
-st.write("### ✅ デバッグ：埋め込み用テキスト確認（embed_text）")
-
-debug_id = st.selectbox(
-    "確認したい名前を選んでください",
-    df["name"].tolist(),
-    index=0
-)
-
-row = df[df["name"] == debug_id].iloc[0]
-
-st.write("**role_norm:**", row["role_norm"])
-st.write("**name:**", row["name"])
-# ✅ URL表示（クリック可能）
-if "url" in row and pd.notna(row["url"]):
-    st.write("**アンケートURL:**")
-    st.link_button("open", row["url"])   # ←おすすめ
-    # 代替案：
-    # st.write(row["url"])
-else:
-    st.write("**アンケートURL:** なし")
-# ✅ TRIOS matchedurl 表示（クリック可能）
-if "matched_url" in row and pd.notna(row["matched_url"]) and str(row["matched_url"]).strip():
-    st.write("**TRIOS URL:**")
-    st.link_button("open", row["matched_url"])
-else:
-    st.write("**TRIOS URL:** なし")
-st.write("**embed_text 文字数:**", len(row["embed_text"]))
-st.text_area("embed_text（類似度計算に使う全文）", row["embed_text"], height=400)
 
 c1, c2, c3 = st.columns(3)
-c1.metric("総件数", len(df))
-c2.metric("AI研究者", len(ai_df))
-c3.metric("他分野研究者", len(other_df))
+c1.metric("総件数 / Total", len(df))
+c2.metric("AI研究者 / AI", len(ai_df))
+c3.metric("他分野研究者 / Domain", len(other_df))
 
 if len(ai_df) == 0 or len(other_df) == 0:
-    st.warning("role分離の結果、片側が0件です。meta.role の値（表記ゆれ）を確認してください。")
-    st.write("role_rawのユニーク（先頭30）:", sorted({str(v) for v in roles_raw if v is not None})[:30])
+    st.warning("role分離の結果、片側が0件です。meta.role の値（表記ゆれ）を確認してください。 / After role split, one side is 0. Please check meta.role values (variants).")
+    st.write("role_rawのユニーク（先頭30）: ", sorted({str(v) for v in roles_raw if v is not None})[:30])
     st.stop()
 
+st.markdown("""
+### 研究者区分の定義 / Definition of Researcher Categories
 
+**AI研究者 / AI Researcher：**
+            
+AI for Science「チャレンジ型」公募に向けたアンケート調査【項目2：研究へのAIの活用経験と意識】の回答が「AIそのものやAIの高度化を研究している」を選択した方
+
+Those who selected“I conduct research on AI itself or on the advancement of AI technologies.” in Item 2 of the AI for Science “Challenge-Type” Call for Proposals survey.
+
+**他分野研究者 / Domain Researcher：**
+            
+上記以外の選択肢を選んだ方/Those who selected any other response in the same survey item.
+""")
 # ------------------------
 # Precompute (HEAVY) ONCE
 # ------------------------
-st.write("### 事前計算")
-st.caption("初回だけ全員分の埋め込みと類似度行列を作ります。以降は人物を選ぶだけで即表示されます。")
 
-with st.spinner("全員分の類似度を事前計算しています。（初回のみとても重いです）10分程度かかります。..."):
+st.markdown("""
+### 入力データ一覧 / Input Data List
+
+- アンケート結果  / Questionnaire results  
+- TRIOS  
+- 下記学位プログラム2025年度修論タイトル及び指導教員リスト  
+    - サービス工学学位プログラム / Master’s Program in Service Engineering  
+    - 社会工学学位プログラム / Master’s Program in Policy and Planning Sciences  
+    - 知能機能システム学位プログラム / Master’s/Doctoral Program in Intelligent and Mechanical Interaction Systems  
+    - リスク・レジリエンス工学学位プログラム / Master’s/Doctoral Program in Risk and Resilience Engineering  
+    - 情報理工学位プログラム / Master’s/Doctoral Program in Computer Science  
+""")
+
+with st.spinner("全員分の類似度を事前計算しています。（初回のみとても重いです）10分程度かかります。... / Precomputing similarity (very heavy only on first run; may take ~10 minutes)..."):
     mats = precompute_similarity_matrices(
         DEFAULT_MODEL,
-        ai_df["embed_text"].tolist(),
-        other_df["embed_text"].tolist(),
+        ai_df["embed_text_ai"].fillna("").astype(str).tolist(),
+        ai_df["embed_text_paper"].fillna("").astype(str).tolist(),
+        other_df["embed_text_ai"].fillna("").astype(str).tolist(),
+        other_df["embed_text_paper"].fillna("").astype(str).tolist(),
+        w_main=0.7,
+        w_paper=0.3,
     )
-
-st.success("事前計算完了")
+st.write("### 事前計算 / Precompute")
+st.success("事前計算完了 / Precompute finished")
 
 
 # ------------------------
-# Fast UI: pick person -> show ALL targets
+# Fast UI: pick person (from ALL) -> show opposite side
 # ------------------------
-st.write("### 設定")
-direction = st.radio("検索方向", ["AI研究者 → 他分野研究者", "他分野研究者 → AI研究者"], index=0, horizontal=True)
+st.markdown('<div id="person_selectbox"></div>', unsafe_allow_html=True)
+st.markdown(
+    '### 人物を選択 / People search <small>（名前を入力してください / Type a name）</small>',
+    unsafe_allow_html=True
+)
 
-if direction == "AI研究者 → 他分野研究者":
+st.markdown(
+    """
+    <style>
+    div[data-baseweb="select"] { width: 100% !important; font-size: 18px; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+def role_jp(role_norm: str) -> str:
+    return "AI研究者 / AI researcher" if role_norm == "ai_researcher" else "他分野研究者 / Domain researcher"
+
+# id → 表示文字
+id_to_label = {
+    r["id"]: (
+        f'👤 {r["name"]} ｜ '
+        f'{r.get("affiliation","")} ｜ '
+        f'{r.get("position","")} ｜ '
+        f'{r.get("research_field","")} ｜ '
+        f'【{role_jp(r.get("role_norm",""))}】'
+    )
+    for _, r in df.iterrows()
+}
+
+# ✅ 先頭に None（ダミー）
+options = [None] + list(id_to_label.keys())
+
+def format_func(_id):
+    if _id is None:
+        return "🔍(名前入力 / Type name)"
+    return id_to_label[_id]
+
+picked_id = st.selectbox(
+    "研究者リスト / Researcher list ※「🔍(名前入力 / Type name)」は消して入力してください / delete the ”🔍(名前入力 / Type name)” and type to search",
+    options=options,
+    format_func=format_func,
+    index=0,
+    key="person_selectbox",
+)
+
+# 未選択なら止める
+if picked_id is None:
+    st.stop()
+
+# 選択後
+picked = df[df["id"] == picked_id].iloc[0]
+picked_role = picked["role_norm"]
+# ✅ 選んだ人が AI なら「他分野」を表示、他分野なら「AI」を表示
+if picked_role == "ai_researcher":
     query_df = ai_df
     doc_df = other_df
     sim_matrix = mats["sim_ai_to_other"]  # [n_ai, n_other]
-    query_label = "AI研究者（query）"
-    doc_label = "他分野研究者（推薦先）"
+    query_label = "AI研究者 / AI researcher"
+    doc_label = "他分野研究者 / Domain researcher"
+    # ai_df の中での index を特定（id で確実に一致させる）
+    sel_idx = int(ai_df.index[ai_df["id"] == picked_id][0])
 else:
     query_df = other_df
     doc_df = ai_df
     sim_matrix = mats["sim_other_to_ai"]  # [n_other, n_ai]
-    query_label = "他分野研究者（query）"
-    doc_label = "AI研究者（推薦先）"
+    query_label = "他分野研究者 / Domain researcher"
+    doc_label = "AI研究者 / AI researcher"
+    # other_df の中での index を特定
+    sel_idx = int(other_df.index[other_df["id"] == picked_id][0])
 
-st.write("### 人物を選択")
-labels = query_df.apply(
-    lambda r: f'{r["name"]} | {r["affiliation"]} | {r["position"]} | {r["research_field"]}',
-    axis=1
-).tolist()
+# ==============================
+# 入力データ枠スタート
+# ==============================
+from streamlit_extras.stylable_container import stylable_container
 
-sel = st.selectbox(query_label, labels, index=0)
-sel_idx = labels.index(sel)
+with stylable_container(
+    key="input_data_box",
+    css_styles="""
+    {
+        border: 2px solid #4A90E2;
+        border-radius: 12px;
+        padding: 20px;
+        background-color: #F8FAFF;
+        margin-bottom: 20px;
+    }
+    """
+):
+    row = query_df.iloc[sel_idx]
 
+    st.write(f"#### {row.get('name','')}さんの入力データ / Input Data for {row.get('name','')}")
+
+    st.write("")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.markdown(f"**名前 / Name**<br>{row.get('name','')}", unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"**研究者区分 / Role**<br>{query_label}", unsafe_allow_html=True)
+
+    with col3:
+        url = row.get("url", "")
+        if pd.notna(url) and str(url).strip():
+            st.markdown(
+                f'**アンケートURL / Survey URL**<br><a href="{url}" target="_blank">見る / Open</a>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown("**アンケートURL / Survey URL**<br>なし / None", unsafe_allow_html=True)
+
+    with col4:
+        trios = row.get("matched_url", "")
+        if pd.notna(trios) and str(trios).strip():
+            st.markdown(
+                f'**TRIOS URL**<br><a href="{trios}" target="_blank">見る / Open</a>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown("**TRIOS URL**<br>なし / None", unsafe_allow_html=True)
+
+    theses = row.get("masters_thesis_titles", [])
+    st.markdown(
+        "<br><b>担当修論 / Supervised Master's Theses</b><br>"
+        + ("<br>".join(f"・{t}" for t in theses) if theses else "なし / None"),
+        unsafe_allow_html=True
+    )
+
+    embed_text = str(row.get("embed_text", ""))
+    st.write("**embed_text 文字数 / Length:**", len(embed_text))
+    st.text_area(
+        "embed_text（類似度計算に使った全文 / Full text used for similarity）",
+        embed_text,
+        height=250
+    )
 # ---- 全件表示（ここから即時）----
 sims = sim_matrix[sel_idx]  # shape: [n_doc]
 order_idx = np.argsort(-sims)  # 全件ソート（n_doc 件）
@@ -636,9 +829,8 @@ res.insert(1, "similarity", sims[order_idx].astype(float))
 show_cols = ["rank", "similarity", "id", "name", "affiliation", "position", "research_field", "summary", "url", "matched_url"]
 res_show = res[show_cols].copy()
 
-st.subheader("検索結果（全件）")
-st.caption(f"使用モデル: {DEFAULT_MODEL}（事前計算済み / E5 query:/passage: / normalize_embeddings=True）")
-st.caption(f"表示: {query_label} → {doc_label}（件数: {len(res_show)}）")
+st.subheader(f"検索結果 / Results list （推薦 / Recommendation : {doc_label})　　件数 / Count : {len(res_show)}")
+st.caption(f"表示 / Direction : {query_label} → {doc_label}")
 
 try:
     st.dataframe(
@@ -646,29 +838,37 @@ try:
         use_container_width=True,
         height=700,
         column_config={
-            "url": st.column_config.LinkColumn("アンケートURL", display_text="open"),
+            "url": st.column_config.LinkColumn("アンケートURL / Survey URL", display_text="open"),
             "matched_url": st.column_config.LinkColumn("TRIOS URL", display_text="open"),
-            "similarity": st.column_config.NumberColumn("類似度", format="%.4f"),
-            "rank": st.column_config.NumberColumn("順位"),
+            "similarity": st.column_config.NumberColumn("類似度 / Similarity", format="%.4f"),
+            "rank": st.column_config.NumberColumn("順位 / Rank"),
         },
         hide_index=True,
     )
 except Exception:
     st.dataframe(res_show, use_container_width=True, height=700, hide_index=True)
 
+st.caption(f"使用モデル / Model : {DEFAULT_MODEL}")
 # ---- ダウンロードも全件 ----
+def safe_filename(s: str) -> str:
+    s = (s or "").strip()
+    # Windowsで使えない文字を置換
+    return re.sub(r'[\\/:*?"<>|]+', "_", s) or "unknown"
+
+picked_name = safe_filename(str(row.get("name", "")))
+
 csv_bytes = res_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
 st.download_button(
-    "結果（全件）をCSVでダウンロード",
+    "結果（全件）をCSVでダウンロード / Download all results as CSV",
     data=csv_bytes,
-    file_name="match_results_all.csv",
+    file_name=f"match_results_all_{picked_name}.csv",
     mime="text/csv",
 )
 
 json_bytes = res_show.to_json(orient="records", force_ascii=False, indent=2).encode("utf-8")
 st.download_button(
-    "結果（全件）をJSONでダウンロード",
+    "結果（全件）をJSONでダウンロード / Download all results as JSON",
     data=json_bytes,
-    file_name="match_results_all.json",
+    file_name=f"match_results_all_{picked_name}.json",
     mime="application/json",
 )
