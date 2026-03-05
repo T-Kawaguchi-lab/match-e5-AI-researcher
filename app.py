@@ -27,7 +27,7 @@ TEXT_KEY_PRIORITY = [
 ]
 
 
-st.set_page_config(page_title="AI↔他分野 推薦 / AI↔Domain Matching", layout="wide")
+st.set_page_config(page_title="AI↔他分野 推薦 箇条書き形式/ AI↔Domain Matching", layout="wide")
 st.title("AI研究者 ↔ 他分野研究者 推薦 / AI↔Domain Researcher Matching")
 
 APP_DIR = Path(__file__).resolve().parent
