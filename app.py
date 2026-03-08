@@ -604,6 +604,10 @@ with st.spinner("全員分の類似度を事前計算しています。（初回
 st.write("### 事前計算 / Precompute")
 st.success("事前計算完了 / Precompute finished")
 
+# ---- 初期重み ----
+weight_a = DEFAULT_WEIGHT_A
+weight_b = DEFAULT_WEIGHT_B
+weight_c = DEFAULT_WEIGHT_C
 st.write("### 重み変更 / Change Weights")
 st.caption("ここで重みを変更すると、事前計算済みの A/B/C 類似度を使って軽く再計算します。 / Changing weights here only recombines precomputed A/B/C similarities.")
 
