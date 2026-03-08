@@ -915,18 +915,22 @@ sims_c[~(query_has_c & doc_has_c)] = 0.5
 # A+ 完全一致ボーナス
 query_a_raw_items = query_df.iloc[sel_idx]["a_raw_items"]
 
-matched_words_list = []
+matched_flag_list = []
 a_plus_bonus = []
 
 for _, doc_row in doc_df.iterrows():
     doc_items = doc_row["a_raw_items"]
     matched_words = exact_match_words_between_a(query_a_raw_items, doc_items)
-    matched_words_list.append(", ".join(matched_words) if matched_words else "")
-    a_plus_bonus.append(0.1 if len(matched_words) >= 1 else 0.0)
 
-matched_words_arr = np.asarray(matched_words_list, dtype=object)
+    if len(matched_words) >= 1:
+        matched_flag_list.append("〇")
+        a_plus_bonus.append(0.05)
+    else:
+        matched_flag_list.append("×")
+        a_plus_bonus.append(0.0)
+
+matched_flag_arr = np.asarray(matched_flag_list, dtype=object)
 a_plus_bonus_arr = np.asarray(a_plus_bonus, dtype=np.float32)
-
 # 総合類似度
 sims = (wa * sims_a + wb * sims_b + wc * sims_c + a_plus_bonus_arr).astype(np.float32)
 order_idx = np.argsort(-sims)
@@ -935,15 +939,15 @@ res = doc_df.iloc[order_idx].copy()
 res.insert(0, "rank", np.arange(1, len(res) + 1))
 res.insert(1, "similarity_a", sims_a[order_idx].astype(float))
 res.insert(2, "similarity_a_plus", a_plus_bonus_arr[order_idx].astype(float))
-res.insert(3, "similarity_b", sims_b[order_idx].astype(float))
-res.insert(4, "similarity_c", sims_c[order_idx].astype(float))
-res.insert(5, "similarity", sims[order_idx].astype(float))
-res.insert(6, "matched_words", matched_words_arr[order_idx])
+res.insert(3, "match_a", matched_flag_arr[order_idx])
+res.insert(4, "similarity_b", sims_b[order_idx].astype(float))
+res.insert(5, "similarity_c", sims_c[order_idx].astype(float))
+res.insert(6, "similarity", sims[order_idx].astype(float))
 show_cols = [
     "rank",
-    "similarity_a", "similarity_a_plus", "similarity_b", "similarity_c",
+    "similarity_a", "similarity_a_plus", "match_a",
+    "similarity_b", "similarity_c",
     "similarity",
-    "matched_words",
     "id", "name", "affiliation", "position", "research_field",
     "summary", "url", "matched_url"
 ]
@@ -951,7 +955,7 @@ res_show = res[show_cols].copy()
 
 st.subheader(f"検索結果 / Results list （推薦 / Recommendation : {doc_label})　　件数 / Count : {len(res_show)}")
 st.caption(f"表示 / Direction : {query_label} → {doc_label}")
-
+st.caption("※ 入力データが一致している場合は、類似度に +0.05 されます。 / If the input data matches exactly, +0.05 is added to the similarity score.")
 try:
     st.dataframe(
         res_show,
@@ -966,7 +970,7 @@ try:
             "similarity_b": st.column_config.NumberColumn("B", format="%.4f"),
             "similarity_c": st.column_config.NumberColumn("C", format="%.4f"),
             "rank": st.column_config.NumberColumn("順位 / Rank"),
-            "matched_words": st.column_config.TextColumn("一致ワード / Matched Words"),
+            "match_a": st.column_config.TextColumn("一致 / Match"),
         },
         hide_index=True,
     )
