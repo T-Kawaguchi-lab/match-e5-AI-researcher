@@ -690,9 +690,9 @@ weight_c = DEFAULT_WEIGHT_C
 st.write("### 重み変更 / Change Weights")
 st.caption("ここで重みを変更すると、事前計算済みの A/B/C 類似度を使って再計算します。 / Changing weights here only recombines precomputed A/B/C similarities.")
 st.markdown("""
-##### 類似度計算項目の定義 / Definition of Similarity Components
+#### 類似度計算項目の定義 / Definition of Similarity Components
 
-**A：AI研究分野 / AI Research Area**  
+##### A：AI研究分野 / AI Research Area 
 
 - **他分野研究者 / Domain Researcher**  
   - Task type hints / 想定タスク  
@@ -704,7 +704,7 @@ st.markdown("""
 
 ---
 
-**B：AI研究内容 / AI Research Content**  
+##### B：AI研究内容 / AI Research Content  
 
 - **他分野研究者 / Domain Researcher**  
   - Research Themes for AI Application / AI活用研究テーマ  
@@ -723,7 +723,7 @@ st.markdown("""
 
 ---
 
-**C：自身の研究 / Own Research**  
+##### C：自身の研究 / Own Research 
 
 - **他分野研究者 / Domain Researcher**  
   - Domain Research field / 他分野研究分野  
