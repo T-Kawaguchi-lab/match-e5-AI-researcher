@@ -924,7 +924,7 @@ for _, doc_row in doc_df.iterrows():
 
     if len(matched_words) >= 1:
         matched_words_list.append(", ".join(matched_words))
-        a_plus_bonus.append(0.1)
+        a_plus_bonus.append(0.05)
     else:
         matched_words_list.append("なし")
         a_plus_bonus.append(0.0)
