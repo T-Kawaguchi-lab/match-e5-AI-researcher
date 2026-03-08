@@ -254,6 +254,12 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
     trios_papers = _as_list(get_nested(r, "trios.papers"))
     trios_topics = _cap_list(trios_topics, 50)
     trios_papers = _cap_list(trios_papers, 50)
+    #（両roleで共通）
+    masters_thesis_titles = [
+        strip_outer_parens(x)
+        for x in (get_nested(r, "meta.masters_thesis_titles") or [])
+        if str(x).strip()
+    ]
 
     if is_domain:
         # -------------------------
@@ -321,6 +327,8 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
         lines_c = []
         if research_field:
             lines_c.append(f"Domain Research field / 他分野研究分野: {research_field}")
+        if masters_thesis_titles:
+            lines_c.append(f"My supervised master’s thesis topics / 担当修論テーマ: {_join(masters_thesis_titles)}")
         if trios_topics:
             lines_c.append(f"Research Topics / 研究トピック: {_join(trios_topics)}")
         if trios_papers:
@@ -354,6 +362,8 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
         lines_b = []
         if current_main_research_themes:
             lines_b.append(f"Main AI research themes / 主なAI研究テーマ: {_join(_cap_list(current_main_research_themes, 30))}")
+        if masters_thesis_titles:
+            lines_c.append(f"My supervised master’s thesis topics / 担当修論テーマ: {_join(masters_thesis_titles)}")
         if trios_topics:
             lines_b.append(f"Research Topics / 研究トピック: {_join(trios_topics)}")
         if trios_papers:
@@ -364,6 +374,8 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
         lines_c = []
         if research_field:
             lines_c.append(f"AI Research field / AI研究分野: {research_field}")
+        if masters_thesis_titles:
+            lines_c.append(f"My supervised master’s thesis topics / 担当修論テーマ: {_join(masters_thesis_titles)}")
         if trios_topics:
             lines_c.append(f"Research Topics / 研究トピック: {_join(trios_topics)}")
         if trios_papers:
@@ -717,7 +729,8 @@ st.markdown("""
   - Complexity / 複雑性  
 
 - **AI研究者 / AI Researcher**  
-  - Main AI research themes / 主なAI研究テーマ  
+  - Main AI research themes / 主なAI研究テーマ
+  - My supervised master’s thesis topics / 担当修論テーマ  
   - TRIOS Research Topics / TRIOS 研究トピック  
   - TRIOS Previous Paper Topics / TRIOS過去論文テーマ
 
@@ -727,11 +740,13 @@ st.markdown("""
 
 - **他分野研究者 / Domain Researcher**  
   - Domain Research field / 他分野研究分野  
+  - My supervised master’s thesis topics / 担当修論テーマ
   - TRIOS Research Topics / TRIOS 研究トピック  
   - TRIOS Previous Paper Topics / TRIOS過去論文テーマ
 
 - **AI研究者 / AI Researcher**  
   - AI Research field / AI研究分野  
+  - My supervised master’s thesis topics / 担当修論テーマ
   - TRIOS Research Topics / TRIOS 研究トピック  
   - TRIOS Previous Paper Topics / TRIOS過去論文テーマ
 
