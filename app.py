@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Iterable, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -21,10 +21,13 @@ TEXT_KEY_PRIORITY = [
     "e5_text",
     "e5_passage",
     "e5_query",
-    # 新JSONLでよくある可能性のある場所（保険）
     "card_text",
     "canonical_card_text",
 ]
+
+DEFAULT_WEIGHT_A = 0.4
+DEFAULT_WEIGHT_B = 0.4
+DEFAULT_WEIGHT_C = 0.2
 
 
 st.set_page_config(page_title="AI↔他分野 推薦 箇条書き形式/ AI↔Domain Matching", layout="wide")
@@ -111,7 +114,6 @@ def summarize_one_line(r: Dict[str, Any]) -> str:
     if isinstance(v, str) and v.strip():
         return v.strip()
 
-    # match_text が文字列のとき
     v2 = r.get("match_text")
     if isinstance(v2, str) and v2.strip():
         s = v2.strip()
@@ -122,49 +124,6 @@ def summarize_one_line(r: Dict[str, Any]) -> str:
         s = v.strip()
         return (s[:160] + "…") if len(s) > 160 else s
     return ""
-
-
-def _flatten_to_lines(obj: Any, prefix: str = "", max_items: int = 200) -> List[str]:
-    """
-    新JSONLの ai_experience / project / data 等を、埋め込み用にテキスト化するための安全なフラット化。
-    """
-    lines: List[str] = []
-
-    def add_line(k: str, v: Any):
-        if v is None:
-            return
-        if isinstance(v, str):
-            vv = v.strip()
-            if vv:
-                lines.append(f"{k}: {vv}" if k else vv)
-        elif isinstance(v, (int, float, bool)):
-            lines.append(f"{k}: {v}" if k else str(v))
-        else:
-            # dict/list はさらに展開されるのでここでは何もしない
-            pass
-
-    def walk(x: Any, p: str = ""):
-        if len(lines) >= max_items:
-            return
-        if isinstance(x, dict):
-            for kk, vv in x.items():
-                key = f"{p}.{kk}" if p else str(kk)
-                if isinstance(vv, (dict, list)):
-                    walk(vv, key)
-                else:
-                    add_line(key, vv)
-        elif isinstance(x, list):
-            for idx, vv in enumerate(x):
-                key = f"{p}[{idx}]" if p else f"[{idx}]"
-                if isinstance(vv, (dict, list)):
-                    walk(vv, key)
-                else:
-                    add_line(key, vv)
-        else:
-            add_line(p, x)
-
-    walk(obj, prefix)
-    return lines
 
 
 def _as_list(x):
@@ -180,14 +139,12 @@ def _join(xs, sep=", "):
     xs = [str(x).strip() for x in xs if str(x).strip()]
     return sep.join(xs)
 
-import re
 
 def strip_outer_parens(s: str) -> str:
     if s is None:
         return ""
     t = str(s).strip()
 
-    # 全角（ ）も半角( )も対応
     pairs = [("(", ")"), ("（", "）")]
 
     for l, r in pairs:
@@ -195,24 +152,22 @@ def strip_outer_parens(s: str) -> str:
             t = t[1:-1].strip()
             break
 
-    # 念のため、外側にカッコが複数重なってたら1回だけ外す仕様（必要なら while に変更OK）
     return t
 
+
 def _cap_list(xs: List[str], max_items: int = 50) -> List[str]:
-    """
-    長すぎるリストでトークン上限超過やノイズが増えるのを避けるため、上位max_itemsに制限。
-    UI表示は変えない（埋め込み用のみ）。
-    """
     xs2 = [str(x).strip() for x in xs if str(x).strip()]
     return xs2[:max_items]
 
 
-def build_embedding_texts_selected_fields(r: Dict[str, Any]) -> Tuple[str, str]:
+def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, str]:
     """
-    役割ごとに指定項目のみを使い、E5用の入力テキストを2本作る：
-      - ai_text: 研究内容/ニーズ/データ/制約など（論文以外）
-      - paper_text: trios_topics, trios_papers, masters_thesis_titles（論文・トピック系）
-    文章（自然文）ではなく、フィールド付きの箇条書き（構造化）で出力する。
+    役割ごとに指定項目のみを使い、E5用の入力テキストを3本作る：
+      A：AI研究分野
+      B：AI研究内容
+      C：自身の研究
+
+    さらにデバッグ表示用に全文 debug_text も返す。
     """
 
     role_raw = (get_nested(r, "meta.role") or get_nested(r, "role") or "").lower()
@@ -220,36 +175,29 @@ def build_embedding_texts_selected_fields(r: Dict[str, Any]) -> Tuple[str, str]:
 
     research_field = (get_nested(r, "meta.research_field") or r.get("research_field") or "").strip()
 
-    # paper-related (両role共通)
-    masters_thesis_titles = [
-        strip_outer_parens(x)
-        for x in (get_nested(r, "meta.masters_thesis_titles") or [])
-        if str(x).strip()
-    ]
     trios_topics = _as_list(get_nested(r, "trios.research_topics"))
     trios_papers = _as_list(get_nested(r, "trios.papers"))
-
-    masters_thesis_titles = _cap_list(masters_thesis_titles, 50)
     trios_topics = _cap_list(trios_topics, 50)
     trios_papers = _cap_list(trios_papers, 50)
 
-    # -------------------------
-    # Domain researcher fields
-    # -------------------------
     if is_domain:
+        # -------------------------
+        # Domain researcher
+        # -------------------------
         themes = _as_list(get_nested(r, "project.themes"))
         academic_challenge_overview = (get_nested(r, "project.academic_challenge_overview") or "").strip()
         ai_leverage_and_impact = (get_nested(r, "project.ai_leverage_and_impact") or "").strip()
 
         sources = (get_nested(r, "data.sources_and_collection") or "").strip()
 
-        # NOTE: ユーザー要望の "date_typees_raw" はスペル揺れの可能性があるため両方拾う
+        # ユーザー要望の date_typees_raw も拾う
         data_types_raw = (
-            (get_nested(r, "data.data_types_raw") or "").strip()
-            or (get_nested(r, "data.date_typees_raw") or "").strip()
+            (get_nested(r, "data.date_typees_raw") or "").strip()
+            or (get_nested(r, "data.data_types_raw") or "").strip()
         )
 
         modalities = _as_list(get_nested(r, "data.modalities"))
+        basic_info = (get_nested(r, "data.basic_info") or "").strip()
         complexity_flags = _as_list(get_nested(r, "data.complexity_flags"))
         complexity_raw = _as_list(get_nested(r, "data.complexity_raw"))
 
@@ -264,40 +212,50 @@ def build_embedding_texts_selected_fields(r: Dict[str, Any]) -> Tuple[str, str]:
         )
         need_ai_hints = _as_list(need_ai_hints)
 
-        # --- ai_text（論文以外）: フィールド付き箇条書き ---
-        lines = []
-        if research_field:
-            lines.append(f"Research field / 研究分野: {research_field}")
-        if themes:
-            lines.append(f"Research theme(s) / 研究テーマ: {_join(_cap_list(themes, 20))}")
-        if academic_challenge_overview:
-            lines.append(f"Academic challenge / 学術課題: {academic_challenge_overview}")
-        if ai_leverage_and_impact:
-            lines.append(f"AI leverage & impact / AI活用の方針・期待インパクト: {ai_leverage_and_impact}")
-
-        if sources:
-            lines.append(f"Data sources & collection / データ出所・収集方法: {sources}")
-        if data_types_raw:
-            lines.append(f"Data types / データ種別: {data_types_raw}")
-        if modalities:
-            lines.append(f"Modalities / モダリティ: {_join(_cap_list(modalities, 20))}")
-        # complexity: flags優先、なければraw
-        if complexity_flags:
-            lines.append(f"Data complexity / 複雑性: {_join(_cap_list(complexity_flags, 20))}")
-        elif complexity_raw:
-            lines.append(f"Data complexity / 複雑性: {_join(_cap_list(complexity_raw, 20))}")
-
+        # A：AI研究分野
+        lines_a = []
         if task_type_hints:
-            lines.append(f"Task type hints / 想定タスク: {_join(_cap_list(task_type_hints, 20))}")
+            lines_a.append(f"Task type hints / 想定タスク: {_join(_cap_list(task_type_hints, 30))}")
         if need_ai_hints:
-            lines.append(f"Needed AI areas (hints) / 必要AI領域ヒント: {_join(_cap_list(need_ai_hints, 30))}")
+            lines_a.append(f"Needed AI category hints / 必要AI領域ヒント: {_join(_cap_list(need_ai_hints, 30))}")
+        text_a = "\n".join(lines_a).strip()
 
-        ai_text = "\n".join(lines).strip()
+        # B：AI研究内容
+        lines_b = []
+        if themes:
+            lines_b.append(f"Research theme(s) / 研究テーマ: {_join(_cap_list(themes, 20))}")
+        if academic_challenge_overview:
+            lines_b.append(f"Academic challenge / 学術課題: {academic_challenge_overview}")
+        if ai_leverage_and_impact:
+            lines_b.append(f"AI leverage & impact / AI活用の方針・期待インパクト: {ai_leverage_and_impact}")
+        if sources:
+            lines_b.append(f"Data sources & collection / データ出所・収集方法: {sources}")
+        if data_types_raw:
+            lines_b.append(f"Data types / データ種別: {data_types_raw}")
+        if modalities:
+            lines_b.append(f"Modalities / モダリティ: {_join(_cap_list(modalities, 20))}")
+        if basic_info:
+            lines_b.append(f"Basic info / データ基本情報: {basic_info}")
+        if complexity_flags:
+            lines_b.append(f"Data complexity flags / 複雑性フラグ: {_join(_cap_list(complexity_flags, 20))}")
+        elif complexity_raw:
+            lines_b.append(f"Data complexity raw / 複雑性生データ: {_join(_cap_list(complexity_raw, 20))}")
+        text_b = "\n".join(lines_b).strip()
 
-    # -------------------------
-    # AI researcher fields
-    # -------------------------
+        # C：自身の研究
+        lines_c = []
+        if research_field:
+            lines_c.append(f"Research field / 研究分野: {research_field}")
+        if trios_topics:
+            lines_c.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
+        if trios_papers:
+            lines_c.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
+        text_c = "\n".join(lines_c).strip()
+
     else:
+        # -------------------------
+        # AI researcher
+        # -------------------------
         ai_categories_raw = _as_list(get_nested(r, "offers.ai_categories_raw"))
 
         methods_keyword = (
@@ -309,89 +267,45 @@ def build_embedding_texts_selected_fields(r: Dict[str, Any]) -> Tuple[str, str]:
 
         current_main_research_themes = _as_list(get_nested(r, "offers.current_main_research_themes"))
 
-        lines = []
-        if research_field:
-            lines.append(f"Research field / 研究分野: {research_field}")
+        # A：AI研究分野
+        lines_a = []
         if ai_categories_raw:
-            lines.append(f"AI categories / AI領域: {_join(_cap_list(ai_categories_raw, 30))}")
+            lines_a.append(f"AI categories / AI領域: {_join(_cap_list(ai_categories_raw, 30))}")
         if methods_keyword:
-            lines.append(f"Methods keywords / 手法キーワード: {_join(_cap_list(methods_keyword, 30))}")
+            lines_a.append(f"Methods keywords / 手法キーワード: {_join(_cap_list(methods_keyword, 30))}")
+        text_a = "\n".join(lines_a).strip()
+
+        # B：AI研究内容
+        lines_b = []
         if current_main_research_themes:
-            lines.append(f"Main research themes / 主な研究テーマ: {_join(_cap_list(current_main_research_themes, 30))}")
+            lines_b.append(f"Main research themes / 主な研究テーマ: {_join(_cap_list(current_main_research_themes, 30))}")
+        if trios_topics:
+            lines_b.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
+        if trios_papers:
+            lines_b.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
+        text_b = "\n".join(lines_b).strip()
 
-        ai_text = "\n".join(lines).strip()
+        # C：自身の研究
+        lines_c = []
+        if research_field:
+            lines_c.append(f"Research field / 研究分野: {research_field}")
+        if trios_topics:
+            lines_c.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
+        if trios_papers:
+            lines_c.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
+        text_c = "\n".join(lines_c).strip()
 
-    # --- paper_text（論文・トピック） ---
-    p_lines = []
-    if trios_topics:
-        p_lines.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
-    if trios_papers:
-        p_lines.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
-    if masters_thesis_titles:
-        p_lines.append(f"Masters thesis titles / 修論タイトル: {_join(masters_thesis_titles)}")
-    paper_text = "\n".join(p_lines).strip()
+    debug_sections = []
+    if text_a:
+        debug_sections.append("[A: AI研究分野 / AI Research Area]\n" + text_a)
+    if text_b:
+        debug_sections.append("[B: AI研究内容 / AI Research Content]\n" + text_b)
+    if text_c:
+        debug_sections.append("[C: 自身の研究 / Own Research]\n" + text_c)
+    debug_text = "\n\n".join(debug_sections).strip()
 
-    return ai_text, paper_text
+    return text_a, text_b, text_c, debug_text
 
-    # -------------------------
-    # AI researcher fields
-    # -------------------------
-    ai_categories_raw = _as_list(get_nested(r, "offers.ai_categories_raw"))
-
-    # NOTE: データ側は methods_keywords（複数形）が実体なので両方拾う
-    methods_keyword = (
-        get_nested(r, "offers.methods_keyword")
-        or get_nested(r, "offers.methods_keywords")
-        or []
-    )
-    methods_keyword = _as_list(methods_keyword)
-
-    current_main_research_themes = _as_list(get_nested(r, "offers.current_main_research_themes"))
-
-    # 日本語文
-    ja = []
-    if research_field:
-        ja.append(f"私の研究分野は{research_field}です。")
-    if ai_categories_raw:
-        ja.append(f"提供できるAI領域は{_join(ai_categories_raw, sep='、')}です。")
-    if methods_keyword:
-        ja.append(f"主な手法キーワードは{_join(methods_keyword, sep='、')}です。")
-    if current_main_research_themes:
-        ja.append(f"現在の主な研究テーマは{_join(current_main_research_themes, sep='、')}です。")
-    if trios_topics:
-        ja.append(f"研究トピックは{_join(trios_topics, sep='、')}です。")
-    if trios_papers:
-        ja.append(f"関連論文は{_join(trios_papers, sep='、')}です。")
-    if masters_thesis_titles:
-            ja.append(f"担当した修論テーマは{_join(masters_thesis_titles, sep='、')}です。")
-    ja_text = " ".join(ja).strip()
-
-    # 英語文
-    en = []
-    if research_field:
-        en.append(f"My research field is {research_field}.")
-    if ai_categories_raw:
-        en.append(f"I can offer AI categories such as {_join(ai_categories_raw)}.")
-    if methods_keyword:
-        en.append(f"Methods/keywords include {_join(methods_keyword)}.")
-    if current_main_research_themes:
-        en.append(f"My current main research themes include {_join(current_main_research_themes)}.")
-    if trios_topics:
-        en.append(f"Research topics include {_join(trios_topics)}.")
-    if trios_papers:
-        en.append(f"Related papers include {_join(trios_papers)}.")
-    if masters_thesis_titles:
-        en.append(f"My supervised master’s thesis topics are {_join(masters_thesis_titles)}.")
-    en_text = " ".join(en).strip()
-
-    # 両方入れる（空は除外）
-    parts = []
-    if ja_text:
-        parts.append(ja_text)
-    if en_text:
-        parts.append(en_text)
-
-    return (ja_text + "\n" + en_text).strip()
 
 def get_text_by_priority(r: Dict[str, Any], priorities: List[str]) -> str:
     for key in priorities:
@@ -399,17 +313,14 @@ def get_text_by_priority(r: Dict[str, Any], priorities: List[str]) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
 
-    # match_text が dict のときは canonical_card_text を最後に再確認
     v = get_nested(r, "match_text.canonical_card_text")
     if isinstance(v, str) and v.strip():
         return v.strip()
 
-    # 新JSONLで match_text が文字列のとき
     v2 = r.get("match_text")
     if isinstance(v2, str) and v2.strip():
         return v2.strip()
 
-    # 最後の保険（metaのJSON化）
     return json.dumps(r.get("meta", {}), ensure_ascii=False)
 
 
@@ -440,44 +351,60 @@ def encode_texts(model_name: str, texts: List[str], mode: str) -> np.ndarray:
 @st.cache_data(show_spinner=False)
 def precompute_similarity_matrices(
     model_name: str,
-    ai_texts_main: List[str],
-    ai_texts_paper: List[str],
-    other_texts_main: List[str],
-    other_texts_paper: List[str],
-    w_main: float = 0.7,
-    w_paper: float = 0.3,
+    ai_texts_a: List[str],
+    ai_texts_b: List[str],
+    ai_texts_c: List[str],
+    other_texts_a: List[str],
+    other_texts_b: List[str],
+    other_texts_c: List[str],
 ) -> Dict[str, np.ndarray]:
     """
-    2方向の類似度行列を先に作る（重み付き）:
+    3軸の類似度行列を先に作る（重みなし）:
+      - A: AI研究分野
+      - B: AI研究内容
+      - C: 自身の研究
+
+    2方向:
       - AI(query) -> Other(passage):  [n_ai, n_other]
       - Other(query) -> AI(passage):  [n_other, n_ai]
 
-    sim = w_main * sim_main + w_paper * sim_paper
+    重み付けはUI側で後から軽く再計算する。
     """
-    # main
-    ai_q_m = encode_texts(model_name, ai_texts_main, mode="query")
-    ai_p_m = encode_texts(model_name, ai_texts_main, mode="passage")
-    ot_q_m = encode_texts(model_name, other_texts_main, mode="query")
-    ot_p_m = encode_texts(model_name, other_texts_main, mode="passage")
 
-    sim_ai_to_other_main = ai_q_m @ ot_p_m.T
-    sim_other_to_ai_main = ot_q_m @ ai_p_m.T
+    # A
+    ai_q_a = encode_texts(model_name, ai_texts_a, mode="query")
+    ai_p_a = encode_texts(model_name, ai_texts_a, mode="passage")
+    ot_q_a = encode_texts(model_name, other_texts_a, mode="query")
+    ot_p_a = encode_texts(model_name, other_texts_a, mode="passage")
 
-    # paper
-    ai_q_p = encode_texts(model_name, ai_texts_paper, mode="query")
-    ai_p_p = encode_texts(model_name, ai_texts_paper, mode="passage")
-    ot_q_p = encode_texts(model_name, other_texts_paper, mode="query")
-    ot_p_p = encode_texts(model_name, other_texts_paper, mode="passage")
+    sim_ai_to_other_a = (ai_q_a @ ot_p_a.T).astype(np.float32)
+    sim_other_to_ai_a = (ot_q_a @ ai_p_a.T).astype(np.float32)
 
-    sim_ai_to_other_paper = ai_q_p @ ot_p_p.T
-    sim_other_to_ai_paper = ot_q_p @ ai_p_p.T
+    # B
+    ai_q_b = encode_texts(model_name, ai_texts_b, mode="query")
+    ai_p_b = encode_texts(model_name, ai_texts_b, mode="passage")
+    ot_q_b = encode_texts(model_name, other_texts_b, mode="query")
+    ot_p_b = encode_texts(model_name, other_texts_b, mode="passage")
 
-    sim_ai_to_other = (w_main * sim_ai_to_other_main + w_paper * sim_ai_to_other_paper).astype(np.float32)
-    sim_other_to_ai = (w_main * sim_other_to_ai_main + w_paper * sim_other_to_ai_paper).astype(np.float32)
+    sim_ai_to_other_b = (ai_q_b @ ot_p_b.T).astype(np.float32)
+    sim_other_to_ai_b = (ot_q_b @ ai_p_b.T).astype(np.float32)
+
+    # C
+    ai_q_c = encode_texts(model_name, ai_texts_c, mode="query")
+    ai_p_c = encode_texts(model_name, ai_texts_c, mode="passage")
+    ot_q_c = encode_texts(model_name, other_texts_c, mode="query")
+    ot_p_c = encode_texts(model_name, other_texts_c, mode="passage")
+
+    sim_ai_to_other_c = (ai_q_c @ ot_p_c.T).astype(np.float32)
+    sim_other_to_ai_c = (ot_q_c @ ai_p_c.T).astype(np.float32)
 
     return {
-        "sim_ai_to_other": sim_ai_to_other,
-        "sim_other_to_ai": sim_other_to_ai,
+        "sim_ai_to_other_a": sim_ai_to_other_a,
+        "sim_ai_to_other_b": sim_ai_to_other_b,
+        "sim_ai_to_other_c": sim_ai_to_other_c,
+        "sim_other_to_ai_a": sim_other_to_ai_a,
+        "sim_other_to_ai_b": sim_other_to_ai_b,
+        "sim_other_to_ai_c": sim_other_to_ai_c,
     }
 
 
@@ -524,7 +451,6 @@ with st.sidebar:
     st.divider()
     st.caption(f"使用モデル / Model : {DEFAULT_MODEL}")
 
-
 # ------------------------
 # Load selected data
 # ------------------------
@@ -569,6 +495,7 @@ st.markdown(
     '##### If you enter the name of a person who responded to the questionnaire in <a href="#person_selectbox"><b>Type name</b></a>, the similarity between researchers calculated using the data below.',
     unsafe_allow_html=True
 )
+
 # ------------------------
 # Build df
 # ------------------------
@@ -585,19 +512,17 @@ for i, r in enumerate(rows, start=1):
     role_n = normalize_role_value(role_raw)
     roles_raw.append(role_raw)
 
-    # ✅ 新JSONLの主要情報も含めて埋め込みテキストを作る（重要）
-    embed_text_ai, embed_text_paper = build_embedding_texts_selected_fields(r)
-    # デバッグ/表示用（UIは変えない）
-    embed_text = (embed_text_ai + "\n\n--- papers ---\n" + embed_text_paper).strip()
+    embed_text_a, embed_text_b, embed_text_c, embed_text = build_embedding_texts_three_axes(r)
+
     matched_url = (get_nested(r, "trios.matched_url") or "").strip()
     masters_thesis_titles = get_nested(r, "meta.masters_thesis_titles") or []
 
-    # 外側カッコ除去（任意）
     masters_thesis_titles = [
         strip_outer_parens(x)
         for x in masters_thesis_titles
         if str(x).strip()
     ]
+
     records.append({
         "id": rid,
         "role_norm": role_n,
@@ -606,12 +531,12 @@ for i, r in enumerate(rows, start=1):
         "position": meta.get("position") or "",
         "research_field": meta.get("research_field") or "",
         "summary": summarize_one_line(r),
-        "embed_text_ai": embed_text_ai,
-        "embed_text_paper": embed_text_paper,
+        "embed_text_a": embed_text_a,
+        "embed_text_b": embed_text_b,
+        "embed_text_c": embed_text_c,
         "embed_text": embed_text,
         "matched_url": matched_url,
         "masters_thesis_titles": masters_thesis_titles,
-        # 参考: ここに追加情報を保持（UIは変えないので表示列には使わない）
         "role_raw": "" if role_raw is None else str(role_raw),
     })
 
@@ -624,7 +549,6 @@ else:
 
 ai_df = df[df["role_norm"] == "ai_researcher"].reset_index(drop=True)
 other_df = df[df["role_norm"] == "other_field_researcher"].reset_index(drop=True)
-
 
 c1, c2, c3 = st.columns(3)
 c1.metric("総件数 / Total", len(df))
@@ -649,6 +573,7 @@ Those who selected“I conduct research on AI itself or on the advancement of AI
             
 上記以外の選択肢を選んだ方/Those who selected any other response in the same survey item.
 """)
+
 # ------------------------
 # Precompute (HEAVY) ONCE
 # ------------------------
@@ -669,16 +594,57 @@ st.markdown("""
 with st.spinner("全員分の類似度を事前計算しています。（初回のみとても重いです）10分程度かかります。... / Precomputing similarity (very heavy only on first run; may take ~10 minutes)..."):
     mats = precompute_similarity_matrices(
         DEFAULT_MODEL,
-        ai_df["embed_text_ai"].fillna("").astype(str).tolist(),
-        ai_df["embed_text_paper"].fillna("").astype(str).tolist(),
-        other_df["embed_text_ai"].fillna("").astype(str).tolist(),
-        other_df["embed_text_paper"].fillna("").astype(str).tolist(),
-        w_main=0.7,
-        w_paper=0.3,
+        ai_df["embed_text_a"].fillna("").astype(str).tolist(),
+        ai_df["embed_text_b"].fillna("").astype(str).tolist(),
+        ai_df["embed_text_c"].fillna("").astype(str).tolist(),
+        other_df["embed_text_a"].fillna("").astype(str).tolist(),
+        other_df["embed_text_b"].fillna("").astype(str).tolist(),
+        other_df["embed_text_c"].fillna("").astype(str).tolist(),
     )
 st.write("### 事前計算 / Precompute")
 st.success("事前計算完了 / Precompute finished")
 
+st.write("### 重み変更 / Change Weights")
+st.caption("ここで重みを変更すると、事前計算済みの A/B/C 類似度を使って軽く再計算します。 / Changing weights here only recombines precomputed A/B/C similarities.")
+
+colw1, colw2, colw3 = st.columns(3)
+
+with colw1:
+    weight_a_main = st.number_input(
+        "A：AI研究分野 / AI Research Area",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(weight_a),
+        step=0.05,
+        format="%.2f",
+        key="weight_a_main",
+    )
+
+with colw2:
+    weight_b_main = st.number_input(
+        "B：AI研究内容 / AI Research Content",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(weight_b),
+        step=0.05,
+        format="%.2f",
+        key="weight_b_main",
+    )
+
+with colw3:
+    weight_c_main = st.number_input(
+        "C：自身の研究 / Own Research",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(weight_c),
+        step=0.05,
+        format="%.2f",
+        key="weight_c_main",
+    )
+
+weight_a = float(weight_a_main)
+weight_b = float(weight_b_main)
+weight_c = float(weight_c_main)
 
 # ------------------------
 # Fast UI: pick person (from ALL) -> show opposite side
@@ -733,25 +699,41 @@ picked_id = st.selectbox(
 if picked_id is None:
     st.stop()
 
+# 重み正規化（合計が1でなくても比率として扱う）
+weight_sum = float(weight_a + weight_b + weight_c)
+if weight_sum <= 0:
+    st.error("重みの合計が0です。少なくとも1つを正にしてください。 / Sum of weights is 0. Please set at least one positive.")
+    st.stop()
+
+wa = float(weight_a / weight_sum)
+wb = float(weight_b / weight_sum)
+wc = float(weight_c / weight_sum)
+
 # 選択後
 picked = df[df["id"] == picked_id].iloc[0]
 picked_role = picked["role_norm"]
-# ✅ 選んだ人が AI なら「他分野」を表示、他分野なら「AI」を表示
+
 if picked_role == "ai_researcher":
     query_df = ai_df
     doc_df = other_df
-    sim_matrix = mats["sim_ai_to_other"]  # [n_ai, n_other]
+
+    sim_a_matrix = mats["sim_ai_to_other_a"]  # [n_ai, n_other]
+    sim_b_matrix = mats["sim_ai_to_other_b"]  # [n_ai, n_other]
+    sim_c_matrix = mats["sim_ai_to_other_c"]  # [n_ai, n_other]
+
     query_label = "AI研究者 / AI researcher"
     doc_label = "他分野研究者 / Domain researcher"
-    # ai_df の中での index を特定（id で確実に一致させる）
     sel_idx = int(ai_df.index[ai_df["id"] == picked_id][0])
 else:
     query_df = other_df
     doc_df = ai_df
-    sim_matrix = mats["sim_other_to_ai"]  # [n_other, n_ai]
+
+    sim_a_matrix = mats["sim_other_to_ai_a"]  # [n_other, n_ai]
+    sim_b_matrix = mats["sim_other_to_ai_b"]  # [n_other, n_ai]
+    sim_c_matrix = mats["sim_other_to_ai_c"]  # [n_other, n_ai]
+
     query_label = "他分野研究者 / Domain researcher"
     doc_label = "AI研究者 / AI researcher"
-    # other_df の中での index を特定
     sel_idx = int(other_df.index[other_df["id"] == picked_id][0])
 
 # ==============================
@@ -816,17 +798,39 @@ with stylable_container(
     st.text_area(
         "embed_text（類似度計算に使った全文 / Full text used for similarity）",
         embed_text,
-        height=250
+        height=300
     )
+
+st.write("### 現在の重み / Current Weights")
+st.write(
+    f"A：AI研究分野 / AI Research Area = **{wa:.3f}**　"
+    f"B：AI研究内容 / AI Research Content = **{wb:.3f}**　"
+    f"C：自身の研究 / Own Research = **{wc:.3f}**"
+)
+
 # ---- 全件表示（ここから即時）----
-sims = sim_matrix[sel_idx]  # shape: [n_doc]
-order_idx = np.argsort(-sims)  # 全件ソート（n_doc 件）
+sims_a = sim_a_matrix[sel_idx]  # shape: [n_doc]
+sims_b = sim_b_matrix[sel_idx]  # shape: [n_doc]
+sims_c = sim_c_matrix[sel_idx]  # shape: [n_doc]
+
+# 軽い再計算：事前計算済みの各項目類似度を重みに応じて合成するだけ
+sims = (wa * sims_a + wb * sims_b + wc * sims_c).astype(np.float32)
+
+order_idx = np.argsort(-sims)
 
 res = doc_df.iloc[order_idx].copy()
 res.insert(0, "rank", np.arange(1, len(res) + 1))
 res.insert(1, "similarity", sims[order_idx].astype(float))
+res.insert(2, "similarity_a", sims_a[order_idx].astype(float))
+res.insert(3, "similarity_b", sims_b[order_idx].astype(float))
+res.insert(4, "similarity_c", sims_c[order_idx].astype(float))
 
-show_cols = ["rank", "similarity", "id", "name", "affiliation", "position", "research_field", "summary", "url", "matched_url"]
+show_cols = [
+    "rank", "similarity",
+    "similarity_a", "similarity_b", "similarity_c",
+    "id", "name", "affiliation", "position", "research_field",
+    "summary", "url", "matched_url"
+]
 res_show = res[show_cols].copy()
 
 st.subheader(f"検索結果 / Results list （推薦 / Recommendation : {doc_label})　　件数 / Count : {len(res_show)}")
@@ -840,7 +844,10 @@ try:
         column_config={
             "url": st.column_config.LinkColumn("アンケートURL / Survey URL", display_text="open"),
             "matched_url": st.column_config.LinkColumn("TRIOS URL", display_text="open"),
-            "similarity": st.column_config.NumberColumn("類似度 / Similarity", format="%.4f"),
+            "similarity": st.column_config.NumberColumn("総合類似度 / Overall Similarity", format="%.4f"),
+            "similarity_a": st.column_config.NumberColumn("A類似度 / Similarity A", format="%.4f"),
+            "similarity_b": st.column_config.NumberColumn("B類似度 / Similarity B", format="%.4f"),
+            "similarity_c": st.column_config.NumberColumn("C類似度 / Similarity C", format="%.4f"),
             "rank": st.column_config.NumberColumn("順位 / Rank"),
         },
         hide_index=True,
@@ -849,10 +856,10 @@ except Exception:
     st.dataframe(res_show, use_container_width=True, height=700, hide_index=True)
 
 st.caption(f"使用モデル / Model : {DEFAULT_MODEL}")
+
 # ---- ダウンロードも全件 ----
 def safe_filename(s: str) -> str:
     s = (s or "").strip()
-    # Windowsで使えない文字を置換
     return re.sub(r'[\\/:*?"<>|]+', "_", s) or "unknown"
 
 picked_name = safe_filename(str(row.get("name", "")))
