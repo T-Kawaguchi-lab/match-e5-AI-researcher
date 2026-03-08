@@ -689,7 +689,68 @@ weight_b = DEFAULT_WEIGHT_B
 weight_c = DEFAULT_WEIGHT_C
 st.write("### 重み変更 / Change Weights")
 st.caption("ここで重みを変更すると、事前計算済みの A/B/C 類似度を使って再計算します。 / Changing weights here only recombines precomputed A/B/C similarities.")
+st.markdown("""
+##### 類似度計算項目の定義 / Definition of Similarity Components
 
+**A：AI研究分野 / AI Research Area**  
+他分野研究者が必要としているAIの分野・タスクと、AI研究者が提供できるAI分野・手法の近さを表します。  
+This measures how close the AI areas and tasks needed by the domain researcher are to the AI areas and methods offered by the AI researcher.
+
+- **他分野研究者 / Domain Researcher**  
+  - `needs.task_type_hints`  
+  - `needs.need_ai_category_hints` または `needs.needed_ai_category_hints`
+
+- **AI研究者 / AI Researcher**  
+  - `offers.ai_categories_raw`  
+  - `offers.methods_keyword` または `offers.methods_keywords`
+
+---
+
+**B：AI研究内容 / AI Research Content**  
+他分野研究者がAIを活用して進めたい研究テーマ・課題と、AI研究者の研究テーマ・研究実績の近さを表します。  
+This measures how close the domain researcher’s research themes and problems to be solved with AI are to the AI researcher’s themes and research achievements.
+
+- **他分野研究者 / Domain Researcher**  
+  - `project.themes`  
+  - `project.academic_challenge_overview`  
+  - `project.ai_leverage_and_impact`  
+  - `data.sources_and_collection`  
+  - `data.date_typees_raw` または `data.data_types_raw`  
+  - `data.modalities`  
+  - `data.basic_info`  
+  - `data.complexity_flags`  
+  - `data.complexity_raw`
+
+- **AI研究者 / AI Researcher**  
+  - `offers.current_main_research_themes`  
+  - `trios.research_topics`  
+  - `trios.papers`
+
+---
+
+**C：自身の研究 / Own Research**  
+研究者自身の専門分野や研究トピック・論文の近さを表します。  
+This measures how close the researchers are in terms of their own academic fields, topics, and papers.
+
+- **他分野研究者 / Domain Researcher**  
+  - `research_field`  
+  - `trios.research_topics`  
+  - `trios.papers`
+
+- **AI研究者 / AI Researcher**  
+  - `research_field`  
+  - `trios.research_topics`  
+  - `trios.papers`
+
+---
+
+**A+：一致ボーナス / Match Bonus**  
+Aの入力データに完全一致する語が1つでもある場合、総合類似度に `+0.1` を加算します。  
+If there is at least one exact word match in the A input data, `+0.1` is added to the overall similarity score.
+
+※ 部分一致は含みません。  
+For example, partial matches are not counted.
+""")
 colw1, colw2, colw3 = st.columns(3)
 
 with colw1:
