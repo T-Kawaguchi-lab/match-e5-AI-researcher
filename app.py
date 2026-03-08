@@ -239,7 +239,15 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
 
     role_raw = (get_nested(r, "meta.role") or get_nested(r, "role") or "").lower()
     is_domain = ("domain" in role_raw) or ("other" in role_raw)
+    task_prefix_domain = (
+        "Task: Find an AI researcher who can advance this research with AI.\n"
+        "Match based on research theme similarity, applicable AI methods, and feasibility.\n"
+    )
 
+    task_prefix_ai = (
+        "Task: Find a domain research problem this AI researcher can help solve.\n"
+        "Match based on research theme similarity, applicable AI methods, and feasibility.\n"
+    )
     research_field = (get_nested(r, "meta.research_field") or r.get("research_field") or "").strip()
 
     trios_topics = _as_list(get_nested(r, "trios.research_topics"))
@@ -370,16 +378,6 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
     if text_c:
         debug_sections.append("[C: 自身の研究 / Own Research]\n" + text_c)
     debug_text = "\n\n".join(debug_sections).strip()
-
-    task_prefix_domain = (
-        "Task: Find an AI researcher who can advance this research with AI.\n"
-        "Match based on research theme similarity, applicable AI methods, and feasibility.\n"
-    )
-
-    task_prefix_ai = (
-        "Task: Find a domain research problem this AI researcher can help solve.\n"
-        "Match based on research theme similarity, applicable AI methods, and feasibility.\n"
-    )
 
     return text_a, text_b, text_c, debug_text
 
