@@ -915,7 +915,7 @@ sims_c[~(query_has_c & doc_has_c)] = 0.5
 # A+ 完全一致ボーナス
 query_a_raw_items = query_df.iloc[sel_idx]["a_raw_items"]
 
-matched_flag_list = []
+matched_words_list = []
 a_plus_bonus = []
 
 for _, doc_row in doc_df.iterrows():
@@ -923,29 +923,29 @@ for _, doc_row in doc_df.iterrows():
     matched_words = exact_match_words_between_a(query_a_raw_items, doc_items)
 
     if len(matched_words) >= 1:
-        matched_flag_list.append("〇")
-        a_plus_bonus.append(0.05)
+        matched_words_list.append(", ".join(matched_words))
+        a_plus_bonus.append(0.1)
     else:
-        matched_flag_list.append("×")
+        matched_words_list.append("なし")
         a_plus_bonus.append(0.0)
 
-matched_flag_arr = np.asarray(matched_flag_list, dtype=object)
+matched_words_arr = np.asarray(matched_words_list, dtype=object)
 a_plus_bonus_arr = np.asarray(a_plus_bonus, dtype=np.float32)
 # 総合類似度
 sims = (wa * sims_a + wb * sims_b + wc * sims_c + a_plus_bonus_arr).astype(np.float32)
 order_idx = np.argsort(-sims)
 
+
 res = doc_df.iloc[order_idx].copy()
 res.insert(0, "rank", np.arange(1, len(res) + 1))
 res.insert(1, "similarity_a", sims_a[order_idx].astype(float))
-res.insert(2, "similarity_a_plus", a_plus_bonus_arr[order_idx].astype(float))
-res.insert(3, "match_a", matched_flag_arr[order_idx])
-res.insert(4, "similarity_b", sims_b[order_idx].astype(float))
-res.insert(5, "similarity_c", sims_c[order_idx].astype(float))
-res.insert(6, "similarity", sims[order_idx].astype(float))
+res.insert(2, "matched_words", matched_words_arr[order_idx])
+res.insert(3, "similarity_b", sims_b[order_idx].astype(float))
+res.insert(4, "similarity_c", sims_c[order_idx].astype(float))
+res.insert(5, "similarity", sims[order_idx].astype(float))
 show_cols = [
     "rank",
-    "similarity_a", "similarity_a_plus", "match_a",
+    "similarity_a", "matched_words",
     "similarity_b", "similarity_c",
     "similarity",
     "id", "name", "affiliation", "position", "research_field",
@@ -964,13 +964,12 @@ try:
         column_config={
             "url": st.column_config.LinkColumn("アンケートURL / Survey URL", display_text="open"),
             "matched_url": st.column_config.LinkColumn("TRIOS URL", display_text="open"),
+            "similarity_a": st.column_config.NumberColumn("A類似度 / Similarity A", format="%.4f"),
+            "matched_words": st.column_config.TextColumn("一致ワード / Matched Words"),
+            "similarity_b": st.column_config.NumberColumn("B類似度 / Similarity B", format="%.4f"),
+            "similarity_c": st.column_config.NumberColumn("C類似度 / Similarity C", format="%.4f"),
             "similarity": st.column_config.NumberColumn("総合類似度 / Overall Similarity", format="%.4f"),
-            "similarity_a": st.column_config.NumberColumn("A", format="%.4f"),
-            "similarity_a_plus": st.column_config.NumberColumn("A+ボーナス / A+ Bonus", format="%.4f"),
-            "similarity_b": st.column_config.NumberColumn("B", format="%.4f"),
-            "similarity_c": st.column_config.NumberColumn("C", format="%.4f"),
-            "rank": st.column_config.NumberColumn("順位 / Rank"),
-            "match_a": st.column_config.TextColumn("一致 / Match"),
+            "rank": st.column_config.NumberColumn("順位 / Rank")
         },
         hide_index=True,
     )
