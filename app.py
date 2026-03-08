@@ -363,7 +363,7 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
         if current_main_research_themes:
             lines_b.append(f"Main AI research themes / 主なAI研究テーマ: {_join(_cap_list(current_main_research_themes, 30))}")
         if masters_thesis_titles:
-            lines_c.append(f"My supervised master’s thesis topics / 担当修論テーマ: {_join(masters_thesis_titles)}")
+            lines_b.append(f"My supervised master’s thesis topics / 担当修論テーマ: {_join(masters_thesis_titles)}")
         if trios_topics:
             lines_b.append(f"Research Topics / 研究トピック: {_join(trios_topics)}")
         if trios_papers:
@@ -1024,7 +1024,7 @@ res_show = res[show_cols].copy()
 
 st.subheader(f"検索結果 / Results list （推薦 / Recommendation : {doc_label})　　件数 / Count : {len(res_show)}")
 st.caption(f"表示 / Direction : {query_label} → {doc_label}")
-st.caption("※ 入力データが一致している場合は、類似度に +0.05 されます。 / If the input data matches exactly, +0.05 is added to the similarity score.")
+st.caption("※ 入力データが一致している場合は、類似度に +0.01 されます。 / If the input data matches exactly, +0.01 is added to the similarity score.")
 try:
     st.dataframe(
         res_show,
