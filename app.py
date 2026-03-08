@@ -159,6 +159,73 @@ def _cap_list(xs: List[str], max_items: int = 50) -> List[str]:
     xs2 = [str(x).strip() for x in xs if str(x).strip()]
     return xs2[:max_items]
 
+def normalize_exact_token(s: Any) -> str:
+    """
+    完全一致判定用の正規化。
+    部分一致は禁止なので、文字列全体を正規化して比較するだけ。
+    """
+    if s is None:
+        return ""
+    t = str(s).strip().lower()
+    t = t.replace("　", " ")
+    t = re.sub(r"\s+", " ", t)
+    return t
+
+
+def get_a_side_raw_items(r: Dict[str, Any]) -> List[str]:
+    """
+    A+ 完全一致判定用の元項目を取得する。
+    Domain側:
+      - needs.task_type_hints
+      - needs.need_ai_category_hints / needs.needed_ai_category_hints
+    AI側:
+      - offers.ai_categories_raw
+      - offers.methods_keyword / offers.methods_keywords
+    """
+    role_raw = (get_nested(r, "meta.role") or get_nested(r, "role") or "").lower()
+    is_domain = ("domain" in role_raw) or ("other" in role_raw)
+
+    if is_domain:
+        xs1 = _as_list(get_nested(r, "needs.task_type_hints"))
+        xs2 = _as_list(
+            get_nested(r, "needs.need_ai_category_hints")
+            or get_nested(r, "needs.needed_ai_category_hints")
+            or get_nested(r, "need_ai_category_hints")
+            or get_nested(r, "needed_ai_category_hints")
+            or []
+        )
+        return xs1 + xs2
+
+    xs1 = _as_list(get_nested(r, "offers.ai_categories_raw"))
+    xs2 = _as_list(
+        get_nested(r, "offers.methods_keyword")
+        or get_nested(r, "offers.methods_keywords")
+        or []
+    )
+    return xs1 + xs2
+
+
+def exact_match_words_between_a(query_items: List[str], doc_items: List[str]) -> List[str]:
+    """
+    完全一致のみ採用。
+    例:
+      - classification vs classification -> 一致
+      - 画像解析 vs データ解析 -> 不一致
+    """
+    q_map = {}
+    for x in query_items:
+        nx = normalize_exact_token(x)
+        if nx:
+            q_map[nx] = str(x).strip()
+
+    d_map = {}
+    for x in doc_items:
+        nx = normalize_exact_token(x)
+        if nx:
+            d_map[nx] = str(x).strip()
+
+    matched_keys = sorted(set(q_map.keys()) & set(d_map.keys()))
+    return [q_map[k] for k in matched_keys]
 
 def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, str]:
     """
@@ -217,15 +284,15 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
         if task_type_hints:
             lines_a.append(f"Task type hints / 想定タスク: {_join(_cap_list(task_type_hints, 30))}")
         if need_ai_hints:
-            lines_a.append(f"Needed AI category hints / 必要AI領域ヒント: {_join(_cap_list(need_ai_hints, 30))}")
-        text_a = "\n".join(lines_a).strip()
+            lines_a.append(f"Needed AI category / 必要AI領域: {_join(_cap_list(need_ai_hints, 30))}")
+        text_a = (task_prefix_domain + "\n".join(lines_a).strip()).strip()
 
         # B：AI研究内容
         lines_b = []
         if themes:
-            lines_b.append(f"Research theme(s) / 研究テーマ: {_join(_cap_list(themes, 20))}")
+            lines_b.append(f"Research Themes for AI Application / AI活用研究テーマ: {_join(_cap_list(themes, 20))}")
         if academic_challenge_overview:
-            lines_b.append(f"Academic challenge / 学術課題: {academic_challenge_overview}")
+            lines_b.append(f"Research Problems to Solve with AI / AI活用における学術課題: {academic_challenge_overview}")
         if ai_leverage_and_impact:
             lines_b.append(f"AI leverage & impact / AI活用の方針・期待インパクト: {ai_leverage_and_impact}")
         if sources:
@@ -236,21 +303,21 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
             lines_b.append(f"Modalities / モダリティ: {_join(_cap_list(modalities, 20))}")
         if basic_info:
             lines_b.append(f"Basic info / データ基本情報: {basic_info}")
-        if complexity_flags:
-            lines_b.append(f"Data complexity flags / 複雑性フラグ: {_join(_cap_list(complexity_flags, 20))}")
-        elif complexity_raw:
-            lines_b.append(f"Data complexity raw / 複雑性生データ: {_join(_cap_list(complexity_raw, 20))}")
-        text_b = "\n".join(lines_b).strip()
+        if complexity_raw:
+            lines_b.append(f"Complexity / 複雑性: {_join(_cap_list(complexity_raw, 20))}")
+        elif complexity_flags:
+            lines_b.append(f"Complexity / 複雑性: {_join(_cap_list(complexity_flags, 20))}")
+        text_b = (task_prefix_domain + "\n".join(lines_b).strip()).strip()
 
         # C：自身の研究
         lines_c = []
         if research_field:
-            lines_c.append(f"Research field / 研究分野: {research_field}")
+            lines_c.append(f"Domain Research field / 他分野研究分野: {research_field}")
         if trios_topics:
-            lines_c.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
+            lines_c.append(f"Research Topics / 研究トピック: {_join(trios_topics)}")
         if trios_papers:
-            lines_c.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
-        text_c = "\n".join(lines_c).strip()
+            lines_c.append(f"Previous Paper Topics / 過去論文テーマ: {_join(trios_papers)}")
+        text_c = (task_prefix_domain + "\n".join(lines_c).strip()).strip()
 
     else:
         # -------------------------
@@ -272,28 +339,28 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
         if ai_categories_raw:
             lines_a.append(f"AI categories / AI領域: {_join(_cap_list(ai_categories_raw, 30))}")
         if methods_keyword:
-            lines_a.append(f"Methods keywords / 手法キーワード: {_join(_cap_list(methods_keyword, 30))}")
-        text_a = "\n".join(lines_a).strip()
+            lines_a.append(f"AI methods keywords / AI手法キーワード: {_join(_cap_list(methods_keyword, 30))}")
+        text_a = (task_prefix_ai + "\n".join(lines_a).strip()).strip()
 
         # B：AI研究内容
         lines_b = []
         if current_main_research_themes:
-            lines_b.append(f"Main research themes / 主な研究テーマ: {_join(_cap_list(current_main_research_themes, 30))}")
+            lines_b.append(f"Main AI research themes / 主なAI研究テーマ: {_join(_cap_list(current_main_research_themes, 30))}")
         if trios_topics:
-            lines_b.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
+            lines_b.append(f"Research Topics / 研究トピック: {_join(trios_topics)}")
         if trios_papers:
-            lines_b.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
-        text_b = "\n".join(lines_b).strip()
+            lines_b.append(f"Previous Paper Topics / 過去論文テーマ: {_join(trios_papers)}")
+        text_b = (task_prefix_ai + "\n".join(lines_b).strip()).strip()
 
         # C：自身の研究
         lines_c = []
         if research_field:
-            lines_c.append(f"Research field / 研究分野: {research_field}")
+            lines_c.append(f"AI Research field / AI研究分野: {research_field}")
         if trios_topics:
-            lines_c.append(f"TRIOS topics / TRIOS研究トピック: {_join(trios_topics)}")
+            lines_c.append(f"Research Topics / 研究トピック: {_join(trios_topics)}")
         if trios_papers:
-            lines_c.append(f"TRIOS papers / TRIOS論文等: {_join(trios_papers)}")
-        text_c = "\n".join(lines_c).strip()
+            lines_c.append(f"Previous Paper Topics / 過去論文テーマ: {_join(trios_papers)}")
+        text_c = (task_prefix_ai + "\n".join(lines_c).strip()).strip()
 
     debug_sections = []
     if text_a:
@@ -303,6 +370,16 @@ def build_embedding_texts_three_axes(r: Dict[str, Any]) -> Tuple[str, str, str, 
     if text_c:
         debug_sections.append("[C: 自身の研究 / Own Research]\n" + text_c)
     debug_text = "\n\n".join(debug_sections).strip()
+
+    task_prefix_domain = (
+        "Task: Find an AI researcher who can advance this research with AI.\n"
+        "Match based on research theme similarity, applicable AI methods, and feasibility.\n"
+    )
+
+    task_prefix_ai = (
+        "Task: Find a domain research problem this AI researcher can help solve.\n"
+        "Match based on research theme similarity, applicable AI methods, and feasibility.\n"
+    )
 
     return text_a, text_b, text_c, debug_text
 
@@ -513,7 +590,7 @@ for i, r in enumerate(rows, start=1):
     roles_raw.append(role_raw)
 
     embed_text_a, embed_text_b, embed_text_c, embed_text = build_embedding_texts_three_axes(r)
-
+    a_raw_items = get_a_side_raw_items(r)
     matched_url = (get_nested(r, "trios.matched_url") or "").strip()
     masters_thesis_titles = get_nested(r, "meta.masters_thesis_titles") or []
 
@@ -535,6 +612,10 @@ for i, r in enumerate(rows, start=1):
         "embed_text_b": embed_text_b,
         "embed_text_c": embed_text_c,
         "embed_text": embed_text,
+        "a_raw_items": a_raw_items,
+        "has_a": bool(str(embed_text_a).strip()),
+        "has_b": bool(str(embed_text_b).strip()),
+        "has_c": bool(str(embed_text_c).strip()),
         "matched_url": matched_url,
         "masters_thesis_titles": masters_thesis_titles,
         "role_raw": "" if role_raw is None else str(role_raw),
@@ -609,7 +690,7 @@ weight_a = DEFAULT_WEIGHT_A
 weight_b = DEFAULT_WEIGHT_B
 weight_c = DEFAULT_WEIGHT_C
 st.write("### 重み変更 / Change Weights")
-st.caption("ここで重みを変更すると、事前計算済みの A/B/C 類似度を使って軽く再計算します。 / Changing weights here only recombines precomputed A/B/C similarities.")
+st.caption("ここで重みを変更すると、事前計算済みの A/B/C 類似度を使って再計算します。 / Changing weights here only recombines precomputed A/B/C similarities.")
 
 colw1, colw2, colw3 = st.columns(3)
 
@@ -812,26 +893,59 @@ st.write(
     f"C：自身の研究 / Own Research = **{wc:.3f}**"
 )
 
-# ---- 全件表示（ここから即時）----
-sims_a = sim_a_matrix[sel_idx]  # shape: [n_doc]
-sims_b = sim_b_matrix[sel_idx]  # shape: [n_doc]
-sims_c = sim_c_matrix[sel_idx]  # shape: [n_doc]
+raw_sims_a = sim_a_matrix[sel_idx].astype(np.float32)
+raw_sims_b = sim_b_matrix[sel_idx].astype(np.float32)
+raw_sims_c = sim_c_matrix[sel_idx].astype(np.float32)
 
-# 軽い再計算：事前計算済みの各項目類似度を重みに応じて合成するだけ
-sims = (wa * sims_a + wb * sims_b + wc * sims_c).astype(np.float32)
+query_has_a = bool(query_df.iloc[sel_idx]["has_a"])
+query_has_b = bool(query_df.iloc[sel_idx]["has_b"])
+query_has_c = bool(query_df.iloc[sel_idx]["has_c"])
 
+doc_has_a = doc_df["has_a"].astype(bool).to_numpy()
+doc_has_b = doc_df["has_b"].astype(bool).to_numpy()
+doc_has_c = doc_df["has_c"].astype(bool).to_numpy()
+
+sims_a = raw_sims_a.copy()
+sims_b = raw_sims_b.copy()
+sims_c = raw_sims_c.copy()
+
+# どちらかが空なら 0.5
+sims_a[~(query_has_a & doc_has_a)] = 0.5
+sims_b[~(query_has_b & doc_has_b)] = 0.5
+sims_c[~(query_has_c & doc_has_c)] = 0.5
+
+# A+ 完全一致ボーナス
+query_a_raw_items = query_df.iloc[sel_idx]["a_raw_items"]
+
+matched_words_list = []
+a_plus_bonus = []
+
+for _, doc_row in doc_df.iterrows():
+    doc_items = doc_row["a_raw_items"]
+    matched_words = exact_match_words_between_a(query_a_raw_items, doc_items)
+    matched_words_list.append(", ".join(matched_words) if matched_words else "")
+    a_plus_bonus.append(0.1 if len(matched_words) >= 1 else 0.0)
+
+matched_words_arr = np.asarray(matched_words_list, dtype=object)
+a_plus_bonus_arr = np.asarray(a_plus_bonus, dtype=np.float32)
+
+# 総合類似度
+sims = (wa * sims_a + wb * sims_b + wc * sims_c + a_plus_bonus_arr).astype(np.float32)
 order_idx = np.argsort(-sims)
 
 res = doc_df.iloc[order_idx].copy()
 res.insert(0, "rank", np.arange(1, len(res) + 1))
-res.insert(1, "similarity", sims[order_idx].astype(float))
-res.insert(2, "similarity_a", sims_a[order_idx].astype(float))
+res.insert(1, "similarity_a", sims_a[order_idx].astype(float))
+res.insert(2, "similarity_a_plus", a_plus_bonus_arr[order_idx].astype(float))
 res.insert(3, "similarity_b", sims_b[order_idx].astype(float))
 res.insert(4, "similarity_c", sims_c[order_idx].astype(float))
-
+res.insert(5, "similarity", sims[order_idx].astype(float))
+res.insert(6, "matched_words", matched_words_arr[order_idx])
 show_cols = [
-    "rank", "similarity",
-    "similarity_a", "similarity_b", "similarity_c",
+    "rank",
+    "similarity_a", "similarity_a_plus", "similarity_b", "similarity_c",
+    "similarity",
+    "matched_words",
     "id", "name", "affiliation", "position", "research_field",
     "summary", "url", "matched_url"
 ]
@@ -849,10 +963,12 @@ try:
             "url": st.column_config.LinkColumn("アンケートURL / Survey URL", display_text="open"),
             "matched_url": st.column_config.LinkColumn("TRIOS URL", display_text="open"),
             "similarity": st.column_config.NumberColumn("総合類似度 / Overall Similarity", format="%.4f"),
-            "similarity_a": st.column_config.NumberColumn("A類似度 / Similarity A", format="%.4f"),
-            "similarity_b": st.column_config.NumberColumn("B類似度 / Similarity B", format="%.4f"),
-            "similarity_c": st.column_config.NumberColumn("C類似度 / Similarity C", format="%.4f"),
+            "similarity_a": st.column_config.NumberColumn("A", format="%.4f"),
+            "similarity_a_plus": st.column_config.NumberColumn("A+ボーナス / A+ Bonus", format="%.4f"),
+            "similarity_b": st.column_config.NumberColumn("B", format="%.4f"),
+            "similarity_c": st.column_config.NumberColumn("C", format="%.4f"),
             "rank": st.column_config.NumberColumn("順位 / Rank"),
+            "matched_words": st.column_config.TextColumn("一致ワード / Matched Words"),
         },
         hide_index=True,
     )
