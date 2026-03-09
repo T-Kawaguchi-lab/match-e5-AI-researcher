@@ -1033,10 +1033,10 @@ try:
         column_config={
             "url": st.column_config.LinkColumn("アンケートURL / Survey URL", display_text="open"),
             "matched_url": st.column_config.LinkColumn("TRIOS URL", display_text="open"),
-            "similarity_a": st.column_config.NumberColumn("A類似度 / Similarity A", format="%.4f"),
+            "similarity_a": st.column_config.NumberColumn("A", format="%.4f"),
             "matched_words": st.column_config.TextColumn("一致ワード / Matched Words"),
-            "similarity_b": st.column_config.NumberColumn("B類似度 / Similarity B", format="%.4f"),
-            "similarity_c": st.column_config.NumberColumn("C類似度 / Similarity C", format="%.4f"),
+            "similarity_b": st.column_config.NumberColumn("B", format="%.4f"),
+            "similarity_c": st.column_config.NumberColumn("C", format="%.4f"),
             "similarity": st.column_config.NumberColumn("総合類似度 / Overall Similarity", format="%.4f"),
             "rank": st.column_config.NumberColumn("順位 / Rank")
         },
